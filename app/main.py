@@ -1,4 +1,5 @@
 import os
+import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
@@ -12,9 +13,9 @@ def healthcheck():
     )
 
 if __name__ == "__main__":
-    import uvicorn
 
     # Read port from environment variable
     port = int(os.getenv("APP_PORT"))
+    host = os.getenv("APP_HOST")
 
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host=host, port=port)
