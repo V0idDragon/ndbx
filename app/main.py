@@ -87,7 +87,7 @@ def session(request: Request, response: Response):
         )
 
         response.status_code = 201
-        return
+        return response
 
 
     # COOKIE EXISTS
@@ -109,7 +109,7 @@ def session(request: Request, response: Response):
         )
 
         response.status_code = 200
-        return
+        return response
 
     # COOKIE SESSION EXPIRED
 
