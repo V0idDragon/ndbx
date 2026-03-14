@@ -86,8 +86,7 @@ def session(request: Request, response: Response):
             path="/",
         )
 
-        response.status_code = 201
-        return response
+        return Response(status_code=201, headers=response.headers)
 
 
     # COOKIE EXISTS
@@ -108,8 +107,7 @@ def session(request: Request, response: Response):
             path="/",
         )
 
-        response.status_code = 200
-        return response
+        return Response(status_code=200, headers=response.headers)
 
     # COOKIE SESSION EXPIRED
 
@@ -140,7 +138,7 @@ def session(request: Request, response: Response):
         path="/",
     )
 
-    response.status_code = 201
+    return Response(status_code=201, headers=response.headers)
 
 if __name__ == "__main__":
 
