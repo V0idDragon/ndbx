@@ -5,4 +5,8 @@ services:
       - .env.local
     ports:
       - "${APP_PORT}:${APP_PORT}"
+    depends_on:
+      - redis
+  redis:
+    image: redis:7-alpine
     restart: unless-stopped
