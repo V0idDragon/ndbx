@@ -23,7 +23,7 @@ mongo_client = MongoClient(
     f"mongodb://{os.getenv('MONGODB_HOST')}:{os.getenv('MONGODB_PORT')}"
 )
 
-db = mongo_client[os.getenv("MONGODB_DATABSE")]
+db = mongo_client[os.getenv("MONGODB_DATABASE")]
 
 users_collection = db["users"]
 events_collection = db["events"]
