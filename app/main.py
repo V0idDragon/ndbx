@@ -201,7 +201,9 @@ async def create_user(request: Request, response: Response):
     )
     redis_client.expire(key, ttl)
 
-    response.set_cookie(
+    res = Response(status_code=201, content=b"")
+
+    res.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=sid,
         httponly=True,
@@ -209,11 +211,7 @@ async def create_user(request: Request, response: Response):
         path="/",
     )
 
-    return Response(
-        status_code=201,
-        content=b"",
-        headers=response.headers
-    )
+    return res
 
 @app.post("/auth/login")
 async def login(request: Request, response: Response):
@@ -251,19 +249,17 @@ async def login(request: Request, response: Response):
 
     redis_client.expire(key, ttl)
 
-    response.set_cookie(
+    res = Response(status_code=204, content=b"")
+
+    res.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=sid,
         httponly=True,
         max_age=ttl,
         path="/",
-    )
+)
 
-    return Response(
-        status_code=204,
-        content=b"",
-        headers=response.headers
-    )
+    return res
 
 @app.post("/auth/logout")
 def logout(request: Request, response: Response):
