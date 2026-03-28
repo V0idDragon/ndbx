@@ -27,6 +27,7 @@ db = mongo_client[os.getenv("MONGODB_DATABASE")]
 
 users_collection = db["users"]
 events_collection = db["events"]
+users_collection.create_index("username", unique=True)
 
 SESSION_COOKIE_NAME = "X-Session-Id"
 
@@ -234,7 +235,16 @@ async def login(request: Request, response: Response):
 
     key = redis_key(sid)
 
-    redis_client.hset(key, "user_id", str(user["_id"]))
+    timestamp = now()
+
+    redis_client.hset(
+        key,
+        mapping={
+            "user_id": str(user["_id"]),
+            "updated_at": timestamp,
+        }
+    )
+
     redis_client.expire(key, ttl)
 
     response.set_cookie(
@@ -290,8 +300,14 @@ async def create_event(request: Request, response: Response):
     if not title:
         return JSONResponse(status_code=400, content={"message": 'invalid "title" field'})
 
-    if events_collection.find_one({"title": title}):
-        return JSONResponse(status_code=409, content={"message": "event already exists"})
+    if not address:
+        return JSONResponse(status_code=400, content={"message": 'invalid "address" field'})
+
+    if not started_at or not isinstance(started_at, str):
+        return JSONResponse(status_code=400, content={"message": 'invalid "started_at" field'})
+
+    if not finished_at or not isinstance(finished_at, str):
+        return JSONResponse(status_code=400, content={"message": 'invalid "finished_at" field'})
 
     event = {
         "title": title,
