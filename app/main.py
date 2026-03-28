@@ -252,8 +252,14 @@ def logout(request: Request, response: Response):
 
     sid = request.cookies.get(SESSION_COOKIE_NAME)
 
-    if sid:
-        redis_client.delete(redis_key(sid))
+    if not sid:
+        return Response(status_code=401)
+
+    key = redis_key(sid)
+
+    if not redis_client.exists(key):
+        return Response(status_code=401)
+    redis_client.delete(key)
 
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
