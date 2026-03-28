@@ -209,7 +209,8 @@ async def create_user(request: Request, response: Response):
         path="/",
     )
 
-    return Response(status_code=201, headers=response.headers)
+    response.status_code = 201
+    return response
 
 @app.post("/auth/login")
 async def login(request: Request, response: Response):
@@ -255,7 +256,8 @@ async def login(request: Request, response: Response):
         path="/",
     )
 
-    return Response(status_code=204, headers=response.headers)
+    response.status_code = 204
+    return response
 
 @app.post("/auth/logout")
 def logout(request: Request, response: Response):
