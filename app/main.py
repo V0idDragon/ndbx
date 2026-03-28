@@ -107,6 +107,7 @@ def session(request: Request, response: Response):
             httponly=True,
             max_age=ttl,
             path="/",
+            samesite ="lax",
         )
 
         return Response(status_code=201, headers=response.headers)
@@ -124,6 +125,7 @@ def session(request: Request, response: Response):
             httponly=True,
             max_age=ttl,
             path="/",
+            samesite="lax",
         )
 
         return Response(status_code=200, headers=response.headers)
@@ -153,6 +155,7 @@ def session(request: Request, response: Response):
         httponly=True,
         max_age=ttl,
         path="/",
+        samesite="lax",
     )
 
     return Response(status_code=201, headers=response.headers)
@@ -209,6 +212,7 @@ async def create_user(request: Request, response: Response):
         httponly=True,
         max_age=ttl,
         path="/",
+        samesite="lax",
     )
 
     return res
@@ -257,7 +261,8 @@ async def login(request: Request, response: Response):
         httponly=True,
         max_age=ttl,
         path="/",
-)
+        samesite="lax",
+    )
 
     return res
 
@@ -281,6 +286,7 @@ def logout(request: Request, response: Response):
         httponly=True,
         max_age=0,
         path="/",
+        samesite="lax",
     )
 
     return Response(status_code=204, headers=response.headers)
