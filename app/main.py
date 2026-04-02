@@ -53,7 +53,7 @@ def get_session_data(request: Request):
     key = redis_key(sid)
     data = redis_client.hgetall(key)
 
-    if data is None:
+    if not data:
         return None, None
 
     if "user_id" not in data:
@@ -235,8 +235,40 @@ async def login(request: Request, response: Response):
         return JSONResponse(status_code=401, content={"message": "invalid credentials"})
 
     ttl = get_ttl()
-    sid = generate_sid()
-    key = redis_key(sid)
+    sid = request.cookies.get(SESSION_COOKIE_NAME)
+
+    if sid:
+        key = redis_key(sid)
+
+        if redis_client.exists(key):
+            redis_client.hset(
+                key,
+                mapping={
+                    "updated_at": now(),
+                    "user_id": str(user["_id"]),
+                },
+            )
+            redis_client.expire(key, ttl)
+
+            res = Response(status_code=204)
+
+            res.set_cookie(
+                key=SESSION_COOKIE_NAME,
+                value=sid,
+                httponly=True,
+                max_age=ttl,
+                path="/",
+            )
+
+            return res
+        
+    while True:
+        sid = generate_sid()
+        key = redis_key(sid)
+
+        if not redis_client.exists(key):
+            break
+
     timestamp = now()
 
     redis_client.hset(
@@ -250,7 +282,7 @@ async def login(request: Request, response: Response):
 
     redis_client.expire(key, ttl)
 
-    res = Response(status_code=204, content=b"")
+    res = Response(status_code=204)
 
     res.set_cookie(
         key=SESSION_COOKIE_NAME,
