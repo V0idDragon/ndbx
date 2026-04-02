@@ -362,12 +362,26 @@ async def create_event(request: Request, response: Response):
 
     result = events_collection.insert_one(event)
 
-    redis_client.expire(redis_key(sid), get_ttl())
+    ttl = get_ttl()
 
-    return JSONResponse(
+    redis_client.expire(redis_key(sid), ttl)
+
+    res = JSONResponse(
         status_code=201,
         content={"id": str(result.inserted_id)}
     )
+
+    res.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=sid,
+        httponly=True,
+        max_age=ttl,
+        path="/",
+    )
+
+    return res
+
+
 
 @app.get("/events")
 def get_events(request: Request):
