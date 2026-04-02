@@ -52,10 +52,14 @@ def get_session_data(request: Request):
 
     key = redis_key(sid)
     data = redis_client.hgetall(key)
-    redis_client.expire(key, get_ttl())
 
     if data is None:
         return None, None
+
+    if "user_id" not in data:
+        return None, None
+    
+    redis_client.expire(key, get_ttl())
 
     return sid, data
 
@@ -108,7 +112,6 @@ def session(request: Request, response: Response):
             httponly=True,
             max_age=ttl,
             path="/",
-            samesite ="lax",
         )
 
         return Response(status_code=201, headers=response.headers)
@@ -126,7 +129,6 @@ def session(request: Request, response: Response):
             httponly=True,
             max_age=ttl,
             path="/",
-            samesite="lax",
         )
 
         return Response(status_code=200, headers=response.headers)
@@ -156,7 +158,6 @@ def session(request: Request, response: Response):
         httponly=True,
         max_age=ttl,
         path="/",
-        samesite="lax",
     )
 
     return Response(status_code=201, headers=response.headers)
@@ -213,7 +214,6 @@ async def create_user(request: Request, response: Response):
         httponly=True,
         max_age=ttl,
         path="/",
-        samesite="lax",
     )
 
     return res
@@ -258,7 +258,6 @@ async def login(request: Request, response: Response):
         httponly=True,
         max_age=ttl,
         path="/",
-        samesite="lax",
     )
 
     return res
@@ -285,7 +284,6 @@ def logout(request: Request, response: Response):
         httponly=True,
         max_age=0,
         path="/",
-        samesite="lax",
     )
 
     return res
