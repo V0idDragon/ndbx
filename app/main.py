@@ -246,8 +246,9 @@ async def login(request: Request, response: Response):
     redis_client.hset(
         key,
         mapping={
-            "user_id": str(user["_id"]),
+            "created_at": timestamp,
             "updated_at": timestamp,
+            "user_id": str(user["_id"]),
         }
     )
 
