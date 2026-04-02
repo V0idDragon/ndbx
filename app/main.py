@@ -234,14 +234,9 @@ async def login(request: Request, response: Response):
     if not user or not bcrypt.checkpw(password.encode(), user["password_hash"].encode("utf-8")):
         return JSONResponse(status_code=401, content={"message": "invalid credentials"})
 
-    sid = request.cookies.get(SESSION_COOKIE_NAME)
     ttl = get_ttl()
-
-    if not sid:
-        sid = generate_sid()
-
+    sid = generate_sid()
     key = redis_key(sid)
-
     timestamp = now()
 
     redis_client.hset(
@@ -282,7 +277,9 @@ def logout(request: Request, response: Response):
         return Response(status_code=401)
     redis_client.delete(key)
 
-    response.set_cookie(
+    res = Response(status_code=204)
+
+    res.set_cookie(
         key=SESSION_COOKIE_NAME,
         value="",
         httponly=True,
@@ -291,7 +288,7 @@ def logout(request: Request, response: Response):
         samesite="lax",
     )
 
-    return Response(status_code=204, headers=response.headers)
+    return res
 
 @app.post("/events")
 async def create_event(request: Request, response: Response):
