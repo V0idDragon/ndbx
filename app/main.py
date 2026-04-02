@@ -54,7 +54,7 @@ def get_session_data(request: Request):
     data = redis_client.hgetall(key)
     redis_client.expire(key, get_ttl())
 
-    if not data:
+    if data is None:
         return None, None
 
     return sid, data
