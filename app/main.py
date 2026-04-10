@@ -4,7 +4,7 @@ import uvicorn
 import secrets
 import bcrypt
 
-from pymongo import MongoClient
+from pymongo import MongoClient, ASCENDING
 from datetime import datetime, timezone
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
@@ -28,6 +28,7 @@ db = mongo_client[os.getenv("MONGODB_DATABASE")]
 users_collection = db["users"]
 events_collection = db["events"]
 users_collection.create_index("username", unique=True)
+events_collection.create_index([("title", ASCENDING)])
 
 SESSION_COOKIE_NAME = "X-Session-Id"
 
