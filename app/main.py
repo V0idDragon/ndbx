@@ -30,7 +30,7 @@ events_collection = db["events"]
 users_collection.create_index("username", unique=True)
 events_collection.create_index([("title", ASCENDING)],unique=True)
 events_collection.create_index([("title", ASCENDING), ("created_by", ASCENDING)])
-events_collection.create_index([("title", ASCENDING), ("created_by", ASCENDING)])
+events_collection.create_index( ("created_by", ASCENDING))
 
 SESSION_COOKIE_NAME = "X-Session-Id"
 
