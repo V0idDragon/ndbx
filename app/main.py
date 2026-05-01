@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
+
 app = FastAPI()
 
 redis_client = redis.Redis(
@@ -90,7 +91,7 @@ def session(request: Request, response: Response):
 
     if not sid:
 
-        while True:
+        for _ in range(5):
             sid = generate_sid()
             key = redis_key(sid)
 
@@ -136,7 +137,7 @@ def session(request: Request, response: Response):
 
         return Response(status_code=200, headers=response.headers)
 
-    while True:
+    for _ in range(5):
         sid = generate_sid()
         key = redis_key(sid)
 
@@ -265,7 +266,7 @@ async def login(request: Request, response: Response):
 
             return res
         
-    while True:
+    for _ in range(5):
         sid = generate_sid()
         key = redis_key(sid)
 
@@ -347,9 +348,23 @@ async def create_event(request: Request, response: Response):
 
     if not started_at or not isinstance(started_at, str):
         return JSONResponse(status_code=400, content={"message": 'invalid "started_at" field'})
+    try:
+        started_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    except Exception:
+        return JSONResponse(status_code=400, content={"message": 'invalid "started_at" format'})
 
     if not finished_at or not isinstance(finished_at, str):
         return JSONResponse(status_code=400, content={"message": 'invalid "finished_at" field'})
+    try:
+        finished_dt = datetime.fromisoformat(finished_at.replace("Z", "+00:00"))
+    except Exception:
+        return JSONResponse(status_code=400, content={"message": 'invalid "finished_at" format'})
+    
+    if finished_dt <= started_dt:
+        return JSONResponse(
+            status_code=400,
+            content={"message": '"finished_at" must be after "started_at"'}
+        )    
 
     event = {
         "title": title,
@@ -359,8 +374,8 @@ async def create_event(request: Request, response: Response):
         },
         "created_at": now(),
         "created_by": session["user_id"],
-        "started_at": started_at,
-        "finished_at": finished_at,
+        "started_at": started_dt,
+        "finished_at": finished_dt,
     }
 
     result = events_collection.insert_one(event)
