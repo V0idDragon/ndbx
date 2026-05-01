@@ -6,8 +6,10 @@ services:
     ports:
       - "${APP_PORT}:${APP_PORT}"
     depends_on:
-      - redis
-      - mongo-init
+      redis:
+        condition: service_started
+      mongo-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   redis:
