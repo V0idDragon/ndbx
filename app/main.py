@@ -353,18 +353,22 @@ async def create_event(request: Request, response: Response):
     except Exception:
         return JSONResponse(status_code=400, content={"message": 'invalid "started_at" format'})
 
+    if not started_at or not isinstance(started_at, str):
+        return JSONResponse(status_code=400, content={"message": 'invalid "started_at" field'})
+
+    try:
+        datetime.strptime(started_at, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return JSONResponse(status_code=400, content={"message": 'invalid "started_at" format'})
+
+
     if not finished_at or not isinstance(finished_at, str):
         return JSONResponse(status_code=400, content={"message": 'invalid "finished_at" field'})
+
     try:
-        finished_dt = datetime.fromisoformat(finished_at.replace("Z", "+00:00"))
-    except Exception:
+        datetime.strptime(finished_at, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
         return JSONResponse(status_code=400, content={"message": 'invalid "finished_at" format'})
-    
-    if finished_dt <= started_dt:
-        return JSONResponse(
-            status_code=400,
-            content={"message": '"finished_at" must be after "started_at"'}
-        )    
 
     event = {
         "title": title,
@@ -374,8 +378,8 @@ async def create_event(request: Request, response: Response):
         },
         "created_at": now(),
         "created_by": session["user_id"],
-        "started_at": started_dt,
-        "finished_at": finished_dt,
+        "started_at": started_at,
+        "finished_at": finished_at,
     }
 
     result = events_collection.insert_one(event)
