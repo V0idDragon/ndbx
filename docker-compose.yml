@@ -7,7 +7,7 @@ services:
       - "${APP_PORT}:${APP_PORT}"
     depends_on:
       - redis
-      - mongodb
+      - mongo-init
     restart: unless-stopped
 
   redis:

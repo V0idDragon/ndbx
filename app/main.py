@@ -610,10 +610,13 @@ def get_user_events(user_id: str, request: Request):
         "count": len(events)
     }
 
-
 if __name__ == "__main__":
+    raw_host = os.getenv("APP_HOST", "0.0.0.0")
+    host = raw_host.replace("http://", "").replace("https://", "").strip("/")
+    port = int(os.getenv("APP_PORT", "8080"))
+
     uvicorn.run(
         app,
-        host=os.getenv("APP_HOST"),
-        port=int(os.getenv("APP_PORT")),
+        host=host,
+        port=port,
     )
