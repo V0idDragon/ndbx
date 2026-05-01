@@ -5,6 +5,15 @@ services:
       - .env.local
     ports:
       - "${APP_PORT}:${APP_PORT}"
+    depends_on:
+      - redis
+      - mongodb
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT}:${REDIS_PORT}"
     restart: unless-stopped
 
   mongo-config:
@@ -62,6 +71,7 @@ services:
     volumes:
       - mongo-shard2-3-data:/data/db
     restart: unless-stopped
+
   mongodb:
     image: mongo:7
     container_name: mongodb
@@ -85,7 +95,7 @@ services:
     environment:
       - MONGODB_CONFIG_PORT=${MONGODB_CONFIG_PORT}
       - MONGODB_SHARD_PORT=${MONGODB_SHARD_PORT}
-      - MONGODB_PORT=${MONGODB_PORT}  
+      - MONGODB_PORT=${MONGODB_PORT}
     volumes:
       - ./scripts:/scripts
     entrypoint: ["sh", "/scripts/init-shard.sh"]

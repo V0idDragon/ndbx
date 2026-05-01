@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
+
 app = FastAPI()
 
 redis_client = redis.Redis(
@@ -28,6 +29,7 @@ db = mongo_client[os.getenv("MONGODB_DATABASE")]
 
 users_collection = db["users"]
 events_collection = db["events"]
+
 users_collection.create_index("username", unique=True)
 events_collection.create_index([("title", ASCENDING)])
 events_collection.create_index([("title", ASCENDING), ("created_by", ASCENDING)])
@@ -35,8 +37,10 @@ events_collection.create_index([("created_by", ASCENDING)])
 
 SESSION_COOKIE_NAME = "X-Session-Id"
 
+
 def generate_sid():
     return secrets.token_hex(16)
+
 
 def get_ttl():
     return int(os.getenv("APP_USER_SESSION_TTL"))
@@ -48,6 +52,7 @@ def redis_key(sid: str):
 
 def now():
     return datetime.now(timezone.utc).isoformat()
+
 
 def get_session_data(request: Request):
     sid = request.cookies.get(SESSION_COOKIE_NAME)
@@ -62,10 +67,10 @@ def get_session_data(request: Request):
 
     if "user_id" not in data:
         return None, None
-    
-    redis_client.expire(key, get_ttl())
 
+    redis_client.expire(key, get_ttl())
     return sid, data
+
 
 def event_to_response(e):
     location = e.get("location", {})
@@ -85,17 +90,134 @@ def event_to_response(e):
         "finished_at": e.get("finished_at"),
     }
 
-@app.get("/health")
-def healthcheck():
-    return JSONResponse(
-        status_code=200,
-        content={"status": "ok"}
-    )
 
+@app.get("/health")
+def health(request: Request, response: Response):
+    sid = request.cookies.get(SESSION_COOKIE_NAME)
+    if sid:
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=sid,
+            httponly=True,
+            max_age=get_ttl(),
+            path="/",
+        )
+    return {"status": "ok"}
+
+
+@app.post("/session")
+def session(request: Request, response: Response):
+    sid = request.cookies.get(SESSION_COOKIE_NAME)
+    ttl = get_ttl()
+
+    if not sid:
+        for _ in range(5):
+            sid = generate_sid()
+            key = redis_key(sid)
+            if not redis_client.exists(key):
+                break
+
+        timestamp = now()
+        redis_client.hset(
+            key,
+            mapping={
+                "created_at": timestamp,
+                "updated_at": timestamp,
+            },
+        )
+        redis_client.expire(key, ttl)
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=sid,
+            httponly=True,
+            max_age=ttl,
+            path="/",
+        )
+        return Response(status_code=201, headers=response.headers)
+
+    key = redis_key(sid)
+
+    if redis_client.exists(key):
+        redis_client.hset(key, "updated_at", now())
+        redis_client.expire(key, ttl)
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=sid,
+            httponly=True,
+            max_age=ttl,
+            path="/",
+        )
+        return Response(status_code=200, headers=response.headers)
+
+    for _ in range(5):
+        sid = generate_sid()
+        key = redis_key(sid)
+        if not redis_client.exists(key):
+            break
+
+    timestamp = now()
+    redis_client.hset(
+        key,
+        mapping={
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        },
+    )
+    redis_client.expire(key, ttl)
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=sid,
+        httponly=True,
+        max_age=ttl,
+        path="/",
+    )
+    return Response(status_code=201, headers=response.headers)
+
+
+@app.post("/users")
+async def create_user(request: Request, response: Response):
+    body = await request.json()
+
+    full_name = body.get("full_name")
+    username = body.get("username")
+    password = body.get("password")
+
+    if not full_name:
+        return JSONResponse(status_code=400, content={"message": 'invalid "full_name" field'})
+    if not username:
+        return JSONResponse(status_code=400, content={"message": 'invalid "username" field'})
+    if not password:
+        return JSONResponse(status_code=400, content={"message": 'invalid "password" field'})
+
+    if users_collection.find_one({"username": username}):
+        return JSONResponse(status_code=409, content={"message": "user already exists"})
+
+    password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode("utf-8")
+
+    user = {
+        "full_name": full_name,
+        "username": username,
+        "password_hash": password_hash
+    }
+
+    result = users_collection.insert_one(user)
+
+    sid = generate_sid()
+    key = redis_key(sid)
+    ttl = get_ttl()
+    timestamp = now()
+
+    redis_client.hset(
+        key,
+        mapping={
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "user_id": str(result.inserted_id),
+        },
+    )
     redis_client.expire(key, ttl)
 
-    res = Response(status_code=204)
-
+    res = Response(status_code=201, content=b"")
     res.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=sid,
@@ -103,25 +225,90 @@ def healthcheck():
         max_age=ttl,
         path="/",
     )
-
     return res
+
+
+@app.post("/auth/login")
+async def login(request: Request, response: Response):
+    body = await request.json()
+
+    username = body.get("username")
+    password = body.get("password")
+
+    if not username or not password:
+        return JSONResponse(status_code=400, content={"message": "invalid credentials"})
+
+    user = users_collection.find_one({"username": username})
+
+    if not user or not bcrypt.checkpw(password.encode(), user["password_hash"].encode("utf-8")):
+        return JSONResponse(status_code=401, content={"message": "invalid credentials"})
+
+    ttl = get_ttl()
+    sid = request.cookies.get(SESSION_COOKIE_NAME)
+
+    if sid:
+        key = redis_key(sid)
+        if redis_client.exists(key):
+            redis_client.hset(
+                key,
+                mapping={
+                    "updated_at": now(),
+                    "user_id": str(user["_id"]),
+                },
+            )
+            redis_client.expire(key, ttl)
+
+            res = Response(status_code=204)
+            res.set_cookie(
+                key=SESSION_COOKIE_NAME,
+                value=sid,
+                httponly=True,
+                max_age=ttl,
+                path="/",
+            )
+            return res
+
+    for _ in range(5):
+        sid = generate_sid()
+        key = redis_key(sid)
+        if not redis_client.exists(key):
+            break
+
+    timestamp = now()
+    redis_client.hset(
+        key,
+        mapping={
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "user_id": str(user["_id"]),
+        }
+    )
+    redis_client.expire(key, ttl)
+
+    res = Response(status_code=204)
+    res.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=sid,
+        httponly=True,
+        max_age=ttl,
+        path="/",
+    )
+    return res
+
 
 @app.post("/auth/logout")
 def logout(request: Request, response: Response):
-
     sid = request.cookies.get(SESSION_COOKIE_NAME)
-
     if not sid:
         return Response(status_code=401)
 
     key = redis_key(sid)
-
     if not redis_client.exists(key):
         return Response(status_code=401)
+
     redis_client.delete(key)
 
     res = Response(status_code=204)
-
     res.set_cookie(
         key=SESSION_COOKIE_NAME,
         value="",
@@ -129,12 +316,11 @@ def logout(request: Request, response: Response):
         max_age=0,
         path="/",
     )
-
     return res
+
 
 @app.post("/events")
 async def create_event(request: Request, response: Response):
-
     sid, session = get_session_data(request)
 
     if not session or "user_id" not in session:
@@ -150,10 +336,8 @@ async def create_event(request: Request, response: Response):
 
     if not title:
         return JSONResponse(status_code=400, content={"message": 'invalid "title" field'})
-
     if not address:
         return JSONResponse(status_code=400, content={"message": 'invalid "address" field'})
-
     if not started_at or not isinstance(started_at, str):
         return JSONResponse(status_code=400, content={"message": 'invalid "started_at" field'})
     try:
@@ -166,7 +350,7 @@ async def create_event(request: Request, response: Response):
         datetime.fromisoformat(finished_at.replace("Z", "+00:00"))
     except Exception:
         return JSONResponse(status_code=400, content={"message": 'invalid "finished_at" format'})
-    
+
     event = {
         "title": title,
         "description": description,
@@ -182,14 +366,12 @@ async def create_event(request: Request, response: Response):
     result = events_collection.insert_one(event)
 
     ttl = get_ttl()
-
     redis_client.expire(redis_key(sid), ttl)
 
     res = JSONResponse(
         status_code=201,
         content={"id": str(result.inserted_id)}
     )
-
     res.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=sid,
@@ -197,14 +379,11 @@ async def create_event(request: Request, response: Response):
         max_age=ttl,
         path="/",
     )
-
     return res
-
 
 
 @app.get("/events")
 def get_events(request: Request):
-
     title = request.query_params.get("title")
     limit = int(request.query_params.get("limit", 10))
     offset = int(request.query_params.get("offset", 0))
@@ -286,6 +465,7 @@ def get_events(request: Request):
         "count": len(events)
     }
 
+
 @app.get("/events/{event_id}")
 def get_event(event_id: str, request: Request):
     try:
@@ -297,6 +477,7 @@ def get_event(event_id: str, request: Request):
         return JSONResponse(status_code=404, content={"message": "Not found"})
 
     return event_to_response(e)
+
 
 @app.patch("/events/{event_id}")
 async def patch_event(event_id: str, request: Request, response: Response):
@@ -359,6 +540,7 @@ async def patch_event(event_id: str, request: Request, response: Response):
         path="/",
     )
     return Response(status_code=204)
+
 
 @app.get("/users")
 def get_users(request: Request):
