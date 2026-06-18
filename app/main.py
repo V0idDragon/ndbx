@@ -161,14 +161,6 @@ def get_title_md5(title: str) -> str:
     return hashlib.md5(title.encode('utf-8')).hexdigest()
 
 def get_reactions_for_title(title: str) -> dict:
-    cache_key = f"event:{get_title_md5(title)}:reactions"
-    cached = redis_client.get(cache_key)
-    if cached:
-        try:
-            return json.loads(cached)
-        except Exception:
-            pass
-
     s = get_cassandra()
     if not s:
         return {"likes": 0, "dislikes": 0}
@@ -185,13 +177,10 @@ def get_reactions_for_title(title: str) -> dict:
                 dislikes += 1
 
     result = {"likes": likes, "dislikes": dislikes}
+    cache_key = f"event:{get_title_md5(title)}:reactions"
     redis_client.delete(cache_key)
     redis_client.setex(cache_key, int(os.getenv("APP_LIKE_TTL", "60")), json.dumps(result))
     return result
-
-def invalidate_reactions_cache(title: str):
-    cache_key = f"event:{get_title_md5(title)}:reactions"
-    redis_client.delete(cache_key)
 
 
 @app.get("/health")
