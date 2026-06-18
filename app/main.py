@@ -785,7 +785,7 @@ async def like_event(event_id: str, request: Request, response: Response):
         (event_id, user_id, 1, datetime.now(timezone.utc))
     )
 
-    invalidate_reactions_cache(event["title"])
+    get_reactions_for_title(event["title"])
 
     redis_client.expire(redis_key(sid), get_ttl())
     res = Response(status_code=204)
@@ -826,7 +826,7 @@ async def dislike_event(event_id: str, request: Request, response: Response):
         (event_id, user_id, -1, datetime.now(timezone.utc))
     )
 
-    invalidate_reactions_cache(event["title"])
+    get_reactions_for_title(event["title"])
 
     redis_client.expire(redis_key(sid), get_ttl())
     res = Response(status_code=204)
