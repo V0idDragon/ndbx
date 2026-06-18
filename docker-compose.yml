@@ -10,8 +10,8 @@ services:
         condition: service_started
       mongo-init:
         condition: service_completed_successfully
-      cassandra:
-        condition: service_healthy
+      cassandra-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   redis:
@@ -119,6 +119,16 @@ services:
       retries: 10
       start_period: 30s
     restart: unless-stopped
+
+  cassandra-init:
+    image: cassandra:4.1
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/scripts
+    entrypoint: ["cqlsh", "cassandra", "-f", "/scripts/init-cassandra.cql"]
+    restart: "no"    
 
 volumes:
   mongo-config-data:
