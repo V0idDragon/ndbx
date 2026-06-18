@@ -11,7 +11,7 @@ services:
       mongo-init:
         condition: service_completed_successfully
       cassandra:
-        condition: service_started  
+        condition: service_healthy
     restart: unless-stopped
 
   redis:
@@ -112,7 +112,13 @@ services:
       - "${CASSANDRA_PORT}:${CASSANDRA_PORT}"
     volumes:
       - cassandra-data:/var/lib/cassandra
-    restart: unless-stopped    
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'SELECT now() FROM system.local'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
 
 volumes:
   mongo-config-data:
