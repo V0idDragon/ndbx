@@ -185,6 +185,7 @@ def get_reactions_for_title(title: str) -> dict:
                 dislikes += 1
 
     result = {"likes": likes, "dislikes": dislikes}
+    redis_client.delete(cache_key)
     redis_client.setex(cache_key, int(os.getenv("APP_LIKE_TTL", "60")), json.dumps(result))
     return result
 
