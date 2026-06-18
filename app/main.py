@@ -43,57 +43,64 @@ events_collection.create_index([("created_by", ASCENDING)])
 
 SESSION_COOKIE_NAME = "X-Session-Id"
 
-cassandra_hosts = os.getenv("CASSANDRA_HOSTS", "cassandra").split(",")
-cassandra_port = int(os.getenv("CASSANDRA_PORT", "9042"))
-cassandra_keyspace = os.getenv("CASSANDRA_KEYSPACE", "testkeyspace")
+cass_session = None
+cassandra_lock = None
 
-for attempt in range(30):
-    try:
-        if os.getenv("CASSANDRA_USERNAME") and os.getenv("CASSANDRA_PASSWORD"):
-            from cassandra.auth import PlainTextAuthProvider
-            auth_provider = PlainTextAuthProvider(
-                username=os.getenv("CASSANDRA_USERNAME"),
-                password=os.getenv("CASSANDRA_PASSWORD")
-            )
-            cassandra_cluster = Cluster(
-                cassandra_hosts,
-                port=cassandra_port,
-                auth_provider=auth_provider,
-                protocol_version=4
-            )
-        else:
-            cassandra_cluster = Cluster(cassandra_hosts, port=cassandra_port, protocol_version=4)
+def get_cassandra():
+    global cass_session, cassandra_lock
+    if cass_session is not None:
+        return cass_session
 
-        cass_session = cassandra_cluster.connect()
+    if cassandra_lock is None:
+        import threading
+        cassandra_lock = threading.Lock()
 
-        cass_session.execute(f"""
-            CREATE KEYSPACE IF NOT EXISTS {cassandra_keyspace}
-            WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 1}}
-        """)
-        cass_session.set_keyspace(cassandra_keyspace)
+    with cassandra_lock:
+        if cass_session is not None:
+            return cass_session
 
-        cass_session.execute("""
-            CREATE TABLE IF NOT EXISTS event_reactions (
-                event_id text,
-                created_by text,
-                like_value tinyint,
-                created_at timestamp,
-                PRIMARY KEY (event_id, created_by)
-            )
-        """)
+        hosts = os.getenv("CASSANDRA_HOSTS", "cassandra").split(",")
+        port = int(os.getenv("CASSANDRA_PORT", "9042"))
+        keyspace = os.getenv("CASSANDRA_KEYSPACE", "testkeyspace")
 
-        cl = getattr(ConsistencyLevel, os.getenv("CASSANDRA_CONSISTENCY", "ONE").upper(), ConsistencyLevel.ONE)
-        cass_session.default_consistency_level = cl
-        cass_session.row_factory = dict_factory
-        print("Cassandra ready")
-        break
-    except Exception as e:
-        print(f"Cassandra not ready, retrying ({attempt+1}/30): {e}")
-        import time
-        time.sleep(2)
-else:
-    print("Could not connect to Cassandra. Exiting.")
-    exit(1)
+        for attempt in range(5):
+            try:
+                if os.getenv("CASSANDRA_USERNAME") and os.getenv("CASSANDRA_PASSWORD"):
+                    from cassandra.auth import PlainTextAuthProvider
+                    auth_provider = PlainTextAuthProvider(
+                        username=os.getenv("CASSANDRA_USERNAME"),
+                        password=os.getenv("CASSANDRA_PASSWORD")
+                    )
+                    cluster = Cluster(hosts, port=port, auth_provider=auth_provider, protocol_version=4)
+                else:
+                    cluster = Cluster(hosts, port=port, protocol_version=4)
+
+                session = cluster.connect()
+                session.execute(f"""
+                    CREATE KEYSPACE IF NOT EXISTS {keyspace}
+                    WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 1}}
+                """)
+                session.set_keyspace(keyspace)
+                session.execute("""
+                    CREATE TABLE IF NOT EXISTS event_reactions (
+                        event_id text,
+                        created_by text,
+                        like_value tinyint,
+                        created_at timestamp,
+                        PRIMARY KEY (event_id, created_by)
+                    )
+                """)
+                cl = getattr(ConsistencyLevel, os.getenv("CASSANDRA_CONSISTENCY", "ONE").upper(), ConsistencyLevel.ONE)
+                session.default_consistency_level = cl
+                session.row_factory = dict_factory
+                cass_session = session
+                print("Cassandra connected")
+                return cass_session
+            except Exception as e:
+                print(f"Cassandra connection attempt {attempt+1} failed: {e}")
+                import time
+                time.sleep(2)
+    return None
 
 def generate_sid():
     return secrets.token_hex(16)
@@ -162,11 +169,15 @@ def get_reactions_for_title(title: str) -> dict:
         except Exception:
             pass
 
+    s = get_cassandra()
+    if not s:
+        return {"likes": 0, "dislikes": 0}
+
     event_ids = [str(e["_id"]) for e in events_collection.find({"title": title}, {"_id": 1})]
     likes = 0
     dislikes = 0
     for eid in event_ids:
-        rows = cass_session.execute("SELECT like_value FROM event_reactions WHERE event_id=%s", (eid,))
+        rows = s.execute("SELECT like_value FROM event_reactions WHERE event_id=%s", (eid,))
         for row in rows:
             if row["like_value"] == 1:
                 likes += 1
@@ -759,8 +770,13 @@ async def like_event(event_id: str, request: Request, response: Response):
         response.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
         return JSONResponse(status_code=404, content={"message": "Event not found"})
 
+    s = get_cassandra()
+    if not s:
+        response.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return JSONResponse(status_code=503, content={"message": "Cassandra unavailable"})
+
     user_id = session_data["user_id"]
-    cass_session.execute(
+    s.execute(
         "INSERT INTO event_reactions (event_id, created_by, like_value, created_at) VALUES (%s, %s, %s, %s)",
         (event_id, user_id, 1, datetime.now(timezone.utc))
     )
@@ -790,8 +806,13 @@ async def dislike_event(event_id: str, request: Request, response: Response):
         response.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
         return JSONResponse(status_code=404, content={"message": "Event not found"})
 
+    s = get_cassandra()
+    if not s:
+        response.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return JSONResponse(status_code=503, content={"message": "Cassandra unavailable"})
+
     user_id = session_data["user_id"]
-    cass_session.execute(
+    s.execute(
         "INSERT INTO event_reactions (event_id, created_by, like_value, created_at) VALUES (%s, %s, %s, %s)",
         (event_id, user_id, -1, datetime.now(timezone.utc))
     )
