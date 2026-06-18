@@ -188,24 +188,6 @@ def get_reactions_for_title(title: str) -> dict:
     redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
     return {"likes": likes, "dislikes": dislikes}
 
-def update_reactions_cache(title: str):
-    s = get_cassandra()
-    if not s:
-        return
-    event_ids = [str(e["_id"]) for e in events_collection.find({"title": title}, {"_id": 1})]
-    likes = 0
-    dislikes = 0
-    for eid in event_ids:
-        rows = s.execute("SELECT like_value FROM event_reactions WHERE event_id=%s", (eid,))
-        for row in rows:
-            if row["like_value"] == 1:
-                likes += 1
-            elif row["like_value"] == -1:
-                dislikes += 1
-    cache_key = f"event:{get_title_md5(title)}:reactions"
-    redis_client.hset(cache_key, mapping={"likes": likes, "dislikes": dislikes})
-    redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
-
 @app.get("/health")
 def health(request: Request, response: Response):
     sid = request.cookies.get(SESSION_COOKIE_NAME)
@@ -764,7 +746,6 @@ def get_user_events(user_id: str, request: Request):
         "count": len(events)
     }
 
-
 @app.post("/events/{event_id}/like")
 async def like_event(event_id: str, request: Request, response: Response):
     sid, session_data = get_session_data(request)
@@ -793,12 +774,27 @@ async def like_event(event_id: str, request: Request, response: Response):
         return res
 
     user_id = session_data["user_id"]
+
+    old_rows = s.execute(
+        "SELECT like_value FROM event_reactions WHERE event_id=%s AND created_by=%s",
+        (event_id, user_id)
+    )
+    old_value = None
+    if old_rows:
+        old_value = old_rows[0]["like_value"]
+
     s.execute(
         "INSERT INTO event_reactions (event_id, created_by, like_value, created_at) VALUES (%s, %s, %s, %s)",
         (event_id, user_id, 1, datetime.now(timezone.utc))
     )
 
-    get_reactions_for_title(event["title"])
+    cache_key = f"event:{get_title_md5(event['title'])}:reactions"
+    if old_value is None:
+        redis_client.hincrby(cache_key, "likes", 1)
+    elif old_value == -1:
+        redis_client.hincrby(cache_key, "dislikes", -1)
+        redis_client.hincrby(cache_key, "likes", 1)
+    redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
 
     redis_client.expire(redis_key(sid), get_ttl())
     res = Response(status_code=204)
@@ -834,12 +830,27 @@ async def dislike_event(event_id: str, request: Request, response: Response):
         return res
 
     user_id = session_data["user_id"]
+
+    old_rows = s.execute(
+        "SELECT like_value FROM event_reactions WHERE event_id=%s AND created_by=%s",
+        (event_id, user_id)
+    )
+    old_value = None
+    if old_rows:
+        old_value = old_rows[0]["like_value"]
+
     s.execute(
         "INSERT INTO event_reactions (event_id, created_by, like_value, created_at) VALUES (%s, %s, %s, %s)",
         (event_id, user_id, -1, datetime.now(timezone.utc))
     )
 
-    get_reactions_for_title(event["title"])
+    cache_key = f"event:{get_title_md5(event['title'])}:reactions"
+    if old_value is None:
+        redis_client.hincrby(cache_key, "dislikes", 1)
+    elif old_value == 1:
+        redis_client.hincrby(cache_key, "likes", -1)
+        redis_client.hincrby(cache_key, "dislikes", 1)
+    redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
 
     redis_client.expire(redis_key(sid), get_ttl())
     res = Response(status_code=204)
