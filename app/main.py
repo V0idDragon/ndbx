@@ -381,12 +381,8 @@ async def create_event(request: Request, response: Response):
     )
     return res
 
-
-@app.get("/events")
-def get_events(request: Request):
+def build_events_query(request: Request):
     title = request.query_params.get("title")
-    limit = int(request.query_params.get("limit", 10))
-    offset = int(request.query_params.get("offset", 0))
     event_id = request.query_params.get("id")
     category = request.query_params.get("category")
     price_from = request.query_params.get("price_from")
@@ -405,12 +401,12 @@ def get_events(request: Request):
         try:
             query["_id"] = ObjectId(event_id)
         except Exception:
-            return {"events": [], "count": 0}
+            return None, {"events": [], "count": 0}
 
     if category:
         valid_categories = ["meetup", "concert", "exhibition", "party", "other"]
         if category not in valid_categories:
-            return JSONResponse(status_code=400, content={"message": 'invalid "category" field'})
+            return None, JSONResponse(status_code=400, content={"message": 'invalid "category" field'})
         query["category"] = category
 
     if price_from is not None or price_to is not None:
@@ -420,13 +416,13 @@ def get_events(request: Request):
                 p_from = int(price_from)
                 price_filter["$gte"] = p_from
             except ValueError:
-                return JSONResponse(status_code=400, content={"message": 'invalid "price_from" field'})
+                return None, JSONResponse(status_code=400, content={"message": 'invalid "price_from" field'})
         if price_to is not None:
             try:
                 p_to = int(price_to)
                 price_filter["$lte"] = p_to
             except ValueError:
-                return JSONResponse(status_code=400, content={"message": 'invalid "price_to" field'})
+                return None, JSONResponse(status_code=400, content={"message": 'invalid "price_to" field'})
         query["price"] = price_filter
 
     if city:
@@ -438,7 +434,7 @@ def get_events(request: Request):
             date_from_iso = dt.strftime("%Y-%m-%dT00:00:00Z")
             query["started_at"] = {**query.get("started_at", {}), "$gte": date_from_iso}
         except ValueError:
-            return JSONResponse(status_code=400, content={"message": 'invalid "date_from" field'})
+            return None, JSONResponse(status_code=400, content={"message": 'invalid "date_from" field'})
 
     if date_to:
         try:
@@ -448,16 +444,27 @@ def get_events(request: Request):
             started_at_filter["$lte"] = date_to_iso
             query["started_at"] = started_at_filter
         except ValueError:
-            return JSONResponse(status_code=400, content={"message": 'invalid "date_to" field'})
+            return None, JSONResponse(status_code=400, content={"message": 'invalid "date_to" field'})
 
     if user:
         found_user = users_collection.find_one({"username": user})
         if found_user:
             query["created_by"] = str(found_user["_id"])
         else:
-            return {"events": [], "count": 0}
+            return None, {"events": [], "count": 0}
 
-    cursor = events_collection.find(query).skip(offset).limit(limit)
+    return query, None
+
+@app.get("/events")
+def get_events(request: Request):
+    limit = int(request.query_params.get("limit", 10))
+    offset = int(request.query_params.get("offset", 0))
+
+    query_or_error, error_response = build_events_query(request)
+    if error_response is not None:
+        return error_response
+
+    cursor = events_collection.find(query_or_error).skip(offset).limit(limit)
     events = [event_to_response(e) for e in cursor]
 
     return {
@@ -618,7 +625,13 @@ def get_user_events(user_id: str, request: Request):
     if not user:
         return JSONResponse(status_code=404, content={"message": "User not found"})
 
-    events_cursor = events_collection.find({"created_by": user_id})
+    query_or_error, error_response = build_events_query(request)
+    if error_response is not None:
+        return error_response
+
+    query_or_error["created_by"] = user_id
+
+    events_cursor = events_collection.find(query_or_error)
     events = [event_to_response(e) for e in events_cursor]
 
     return {
