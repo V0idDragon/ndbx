@@ -480,20 +480,22 @@ def get_event(event_id: str, request: Request):
 
 
 @app.patch("/events/{event_id}")
-async def patch_event(event_id: str, request: Request, response: Response):
+async def patch_event(event_id: str, request: Request):
     sid = request.cookies.get(SESSION_COOKIE_NAME)
     ttl = get_ttl()
 
     if not sid:
-        response.delete_cookie(SESSION_COOKIE_NAME, path="/")
-        return Response(status_code=401)
+        res = Response(status_code=401)
+        res.delete_cookie(SESSION_COOKIE_NAME, path="/")
+        return res
 
     key = redis_key(sid)
     session_data = redis_client.hgetall(key)
 
     if not session_data or "user_id" not in session_data:
-        response.delete_cookie(SESSION_COOKIE_NAME, path="/")
-        return Response(status_code=401)
+        res = Response(status_code=401)
+        res.delete_cookie(SESSION_COOKIE_NAME, path="/")
+        return res
 
     redis_client.expire(key, ttl)
     user_id = session_data["user_id"]
@@ -501,13 +503,15 @@ async def patch_event(event_id: str, request: Request, response: Response):
     try:
         oid = ObjectId(event_id)
     except Exception:
-        response.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=ttl, path="/")
-        return JSONResponse(status_code=404, content={"message": "Not found. Be sure that event exists and you are the organizer"})
+        res = JSONResponse(status_code=404, content={"message": "Not found. Be sure that event exists and you are the organizer"})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=ttl, path="/")
+        return res
 
     event = events_collection.find_one({"_id": oid})
     if not event or event["created_by"] != user_id:
-        response.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=ttl, path="/")
-        return JSONResponse(status_code=404, content={"message": "Not found. Be sure that event exists and you are the organizer"})
+        res = JSONResponse(status_code=404, content={"message": "Not found. Be sure that event exists and you are the organizer"})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=ttl, path="/")
+        return res
 
     body = await request.json()
     update_fields = {}
@@ -519,20 +523,23 @@ async def patch_event(event_id: str, request: Request, response: Response):
     if category is not None:
         valid_categories = ["meetup", "concert", "exhibition", "party", "other"]
         if category not in valid_categories:
-            response.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=ttl, path="/")
-            return JSONResponse(status_code=400, content={"message": 'invalid "category" field'})
+            res = JSONResponse(status_code=400, content={"message": 'invalid "category" field'})
+            res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=ttl, path="/")
+            return res
         update_fields["category"] = category
 
     if price is not None:
         if not isinstance(price, int) or price < 0:
-            response.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=ttl, path="/")
-            return JSONResponse(status_code=400, content={"message": 'invalid "price" field'})
+            res = JSONResponse(status_code=400, content={"message": 'invalid "price" field'})
+            res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=ttl, path="/")
+            return res
         update_fields["price"] = price
 
     if city is not None:
         if not isinstance(city, str):
-            response.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=ttl, path="/")
-            return JSONResponse(status_code=400, content={"message": 'invalid "city" field'})
+            res = JSONResponse(status_code=400, content={"message": 'invalid "city" field'})
+            res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=ttl, path="/")
+            return res
         if city == "":
             events_collection.update_one({"_id": oid}, {"$unset": {"location.city": ""}})
         else:
@@ -547,9 +554,9 @@ async def patch_event(event_id: str, request: Request, response: Response):
                 set_fields[k] = v
         events_collection.update_one({"_id": oid}, {"$set": set_fields})
 
-    response.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=ttl, path="/")
-    return Response(status_code=204)
-
+    res = Response(status_code=204)
+    res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=ttl, path="/")
+    return res
 
 @app.get("/users")
 def get_users(request: Request):
