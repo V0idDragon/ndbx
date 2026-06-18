@@ -756,24 +756,28 @@ def get_user_events(user_id: str, request: Request):
 async def like_event(event_id: str, request: Request, response: Response):
     sid, session_data = get_session_data(request)
     if not session_data or "user_id" not in session_data:
-        response.delete_cookie(SESSION_COOKIE_NAME, path="/")
-        return Response(status_code=401)
+        res = Response(status_code=401)
+        res.delete_cookie(SESSION_COOKIE_NAME, path="/")
+        return res
 
     try:
         oid = ObjectId(event_id)
     except Exception:
-        response.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
-        return JSONResponse(status_code=404, content={"message": "Event not found"})
+        res = JSONResponse(status_code=404, content={"message": "Event not found"})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
 
     event = events_collection.find_one({"_id": oid})
     if not event:
-        response.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
-        return JSONResponse(status_code=404, content={"message": "Event not found"})
+        res = JSONResponse(status_code=404, content={"message": "Event not found"})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
 
     s = get_cassandra()
     if not s:
-        response.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
-        return JSONResponse(status_code=503, content={"message": "Cassandra unavailable"})
+        res = JSONResponse(status_code=503, content={"message": "Cassandra unavailable"})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
 
     user_id = session_data["user_id"]
     s.execute(
@@ -784,32 +788,37 @@ async def like_event(event_id: str, request: Request, response: Response):
     invalidate_reactions_cache(event["title"])
 
     redis_client.expire(redis_key(sid), get_ttl())
-    response.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
-    return Response(status_code=204)
+    res = Response(status_code=204)
+    res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+    return res
 
 
 @app.post("/events/{event_id}/dislike")
 async def dislike_event(event_id: str, request: Request, response: Response):
     sid, session_data = get_session_data(request)
     if not session_data or "user_id" not in session_data:
-        response.delete_cookie(SESSION_COOKIE_NAME, path="/")
-        return Response(status_code=401)
+        res = Response(status_code=401)
+        res.delete_cookie(SESSION_COOKIE_NAME, path="/")
+        return res
 
     try:
         oid = ObjectId(event_id)
     except Exception:
-        response.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
-        return JSONResponse(status_code=404, content={"message": "Event not found"})
+        res = JSONResponse(status_code=404, content={"message": "Event not found"})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
 
     event = events_collection.find_one({"_id": oid})
     if not event:
-        response.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
-        return JSONResponse(status_code=404, content={"message": "Event not found"})
+        res = JSONResponse(status_code=404, content={"message": "Event not found"})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
 
     s = get_cassandra()
     if not s:
-        response.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
-        return JSONResponse(status_code=503, content={"message": "Cassandra unavailable"})
+        res = JSONResponse(status_code=503, content={"message": "Cassandra unavailable"})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
 
     user_id = session_data["user_id"]
     s.execute(
@@ -820,8 +829,10 @@ async def dislike_event(event_id: str, request: Request, response: Response):
     invalidate_reactions_cache(event["title"])
 
     redis_client.expire(redis_key(sid), get_ttl())
-    response.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
-    return Response(status_code=204)
+    res = Response(status_code=204)
+    res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+    return res
+
 
 if __name__ == "__main__":
     raw_host = os.getenv("APP_HOST", "0.0.0.0")
