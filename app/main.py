@@ -787,6 +787,10 @@ async def like_event(event_id: str, request: Request, response: Response):
     )
 
     cache_key = f"event:{get_title_md5(event['title'])}:reactions"
+    if not redis_client.exists(cache_key):
+        redis_client.hset(cache_key, mapping={"likes": 0, "dislikes": 0})
+        redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
+
     if old_value is None:
         redis_client.hincrby(cache_key, "likes", 1)
     elif old_value == -1:
@@ -842,6 +846,10 @@ async def dislike_event(event_id: str, request: Request, response: Response):
     )
 
     cache_key = f"event:{get_title_md5(event['title'])}:reactions"
+    if not redis_client.exists(cache_key):
+        redis_client.hset(cache_key, mapping={"likes": 0, "dislikes": 0})
+        redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
+
     if old_value is None:
         redis_client.hincrby(cache_key, "dislikes", 1)
     elif old_value == 1:
