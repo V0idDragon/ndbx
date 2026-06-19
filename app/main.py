@@ -185,6 +185,7 @@ def get_reactions_for_title(title: str) -> dict:
                 dislikes += 1
 
     redis_client.hset(cache_key, mapping={"likes": likes, "dislikes": dislikes})
+    redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
     return {"likes": likes, "dislikes": dislikes}
 
 @app.get("/health")
@@ -778,9 +779,7 @@ async def like_event(event_id: str, request: Request, response: Response):
         "SELECT like_value FROM event_reactions WHERE event_id=%s AND created_by=%s",
         (event_id, user_id)
     )
-    old_value = None
-    if old_rows:
-        old_value = old_rows[0]["like_value"]
+    old_value = old_rows[0]["like_value"] if old_rows else None
 
     s.execute(
         "INSERT INTO event_reactions (event_id, created_by, like_value, created_at) VALUES (%s, %s, %s, %s)",
@@ -793,6 +792,8 @@ async def like_event(event_id: str, request: Request, response: Response):
     elif old_value == -1:
         redis_client.hincrby(cache_key, "dislikes", -1)
         redis_client.hincrby(cache_key, "likes", 1)
+
+    redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
 
     redis_client.expire(redis_key(sid), get_ttl())
     res = Response(status_code=204)
@@ -833,9 +834,7 @@ async def dislike_event(event_id: str, request: Request, response: Response):
         "SELECT like_value FROM event_reactions WHERE event_id=%s AND created_by=%s",
         (event_id, user_id)
     )
-    old_value = None
-    if old_rows:
-        old_value = old_rows[0]["like_value"]
+    old_value = old_rows[0]["like_value"] if old_rows else None
 
     s.execute(
         "INSERT INTO event_reactions (event_id, created_by, like_value, created_at) VALUES (%s, %s, %s, %s)",
@@ -849,11 +848,12 @@ async def dislike_event(event_id: str, request: Request, response: Response):
         redis_client.hincrby(cache_key, "likes", -1)
         redis_client.hincrby(cache_key, "dislikes", 1)
 
+    redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
+
     redis_client.expire(redis_key(sid), get_ttl())
     res = Response(status_code=204)
     res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
     return res
-
 
 if __name__ == "__main__":
     raw_host = os.getenv("APP_HOST", "0.0.0.0")
