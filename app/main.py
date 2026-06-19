@@ -7,6 +7,7 @@ import hashlib
 import json
 import threading
 import time
+import uuid
 
 from bson import ObjectId
 from pymongo import MongoClient, ASCENDING
@@ -108,6 +109,31 @@ def set_user_reaction(event_id: str, user_id: str, like_value: int):
     key = f"user_reaction:{user_id}:{event_id}"
     redis_client.setex(key, 3600, like_value)
 
+def get_reviews_summary_for_title(title: str) -> dict:
+    cache_key = f"event:{get_title_md5(title)}:reviews"
+    cached = redis_client.hgetall(cache_key)
+    if cached:
+        redis_client.expire(cache_key, int(os.getenv("APP_EVENT_REVIEWS_TTL", "120")))
+        return {"count": int(cached.get("count", 0)), "rating": float(cached.get("rating", 0.0))}
+
+    event_ids = [str(e["_id"]) for e in events_collection.find({"title": title}, {"_id": 1})]
+    total_rating = 0
+    count = 0
+    for eid in event_ids:
+        rows = cassandra_execute("SELECT rating FROM event_reviews WHERE event_id = %s", (eid,))
+        for row in rows:
+            total_rating += row["rating"]
+            count += 1
+
+    rating = round(total_rating / count, 1) if count > 0 else 0.0
+    result = {"count": count, "rating": rating}
+    redis_client.hset(cache_key, mapping={"count": count, "rating": str(rating)})
+    redis_client.expire(cache_key, int(os.getenv("APP_EVENT_REVIEWS_TTL", "120")))
+    return result
+
+def invalidate_reviews_cache(title: str):
+    cache_key = f"event:{get_title_md5(title)}:reviews"
+    redis_client.delete(cache_key)    
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -131,7 +157,7 @@ def get_session_data(request: Request):
     return sid, data
 
 
-def event_to_response(e, reactions=None):
+def event_to_response(e, reactions=None, reviews=None):
     location = e.get("location", {})
     result = {
         "id": str(e["_id"]),
@@ -150,6 +176,8 @@ def event_to_response(e, reactions=None):
     }
     if reactions is not None:
         result["reactions"] = reactions
+    if reviews is not None:
+        result["reviews"] = reviews
     return result
 
 def get_title_md5(title: str) -> str:
@@ -548,11 +576,14 @@ def get_events(request: Request):
         return error_response
 
     cursor = events_collection.find(query_or_error).skip(offset).limit(limit)
-    include_reactions = request.query_params.get("include") == "reactions"
+    include_params = request.query_params.get("include", "")
+    include_reactions = "reactions" in include_params
+    include_reviews = "reviews" in include_params
     events = []
     for e in cursor:
         reactions = get_reactions_for_title(e["title"]) if include_reactions else None
-        events.append(event_to_response(e, reactions))
+        reviews = get_reviews_summary_for_title(e["title"]) if include_reviews else None
+        events.append(event_to_response(e, reactions, reviews))
 
     return {
         "events": events,
@@ -570,9 +601,12 @@ def get_event(event_id: str, request: Request):
     if e is None:
         return JSONResponse(status_code=404, content={"message": "Not found"})
 
-    include_reactions = request.query_params.get("include") == "reactions"
+    include_params = request.query_params.get("include", "")
+    include_reactions = "reactions" in include_params
+    include_reviews = "reviews" in include_params
     reactions = get_reactions_for_title(e["title"]) if include_reactions else None
-    return event_to_response(e, reactions)
+    reviews = get_reviews_summary_for_title(e["title"]) if include_reviews else None
+    return event_to_response(e, reactions, reviews)
 
 
 @app.patch("/events/{event_id}")
@@ -721,12 +755,14 @@ def get_user_events(user_id: str, request: Request):
     query_or_error["created_by"] = user_id
 
     events_cursor = events_collection.find(query_or_error)
-    include_reactions = request.query_params.get("include") == "reactions"
+    include_params = request.query_params.get("include", "")
+    include_reactions = "reactions" in include_params
+    include_reviews = "reviews" in include_params
     events = []
     for e in events_cursor:
         reactions = get_reactions_for_title(e["title"]) if include_reactions else None
-        events.append(event_to_response(e, reactions))
-
+        reviews = get_reviews_summary_for_title(e["title"]) if include_reviews else None
+        events.append(event_to_response(e, reactions, reviews))
     return {
         "events": events,
         "count": len(events)
@@ -823,6 +859,145 @@ async def dislike_event(event_id: str, request: Request, response: Response):
     set_user_reaction(event_id, user_id, -1)
 
     redis_client.expire(redis_key(sid), get_ttl())
+    res = Response(status_code=204)
+    res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+    return res
+
+@app.post("/events/{event_id}/reviews")
+async def create_review(event_id: str, request: Request, response: Response):
+    sid, session_data = get_session_data(request)
+    if not session_data or "user_id" not in session_data:
+        return Response(status_code=401)
+
+    user_id = session_data["user_id"]
+
+    body = await request.json()
+    comment = body.get("comment")
+    rating = body.get("rating")
+
+    if not isinstance(comment, str) or len(comment) > 300:
+        res = JSONResponse(status_code=400, content={"message": 'invalid "comment" field'})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
+    if not isinstance(rating, int) or rating < 1 or rating > 5:
+        res = JSONResponse(status_code=400, content={"message": 'invalid "rating" field'})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
+
+    try:
+        oid = ObjectId(event_id)
+    except Exception:
+        res = JSONResponse(status_code=404, content={"message": "Event not found"})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
+
+    event = events_collection.find_one({"_id": oid})
+    if not event:
+        res = JSONResponse(status_code=404, content={"message": "Event not found"})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
+
+    existing = cassandra_execute(
+        "SELECT id FROM event_reviews WHERE event_id = %s AND created_by = %s",
+        (event_id, user_id)
+    )
+    if existing:
+        res = JSONResponse(status_code=409, content={"message": "Already exists"})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
+
+    review_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    cassandra_execute(
+        "INSERT INTO event_reviews (event_id, created_by, id, rating, comment, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        (event_id, user_id, review_id, rating, comment, now, now)
+    )
+
+    invalidate_reviews_cache(event["title"])
+
+    redis_client.expire(redis_key(sid), get_ttl())
+    res = JSONResponse(status_code=201, content={"id": str(review_id)})
+    res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+    return res
+
+@app.get("/events/{event_id}/reviews")
+def get_reviews(event_id: str, request: Request, limit: int = 10, offset: int = 0):
+    if limit < 0 or offset < 0:
+        return JSONResponse(status_code=400, content={"message": 'invalid "limit" or "offset" field'})
+
+    rows = cassandra_execute(
+        "SELECT id, event_id, rating, comment, created_at, created_by, updated_at FROM event_reviews WHERE event_id = %s",
+        (event_id,)
+    )
+    reviews_list = []
+    for row in rows:
+        reviews_list.append({
+            "id": str(row["id"]),
+            "event_id": row["event_id"],
+            "comment": row["comment"],
+            "created_at": row["created_at"].isoformat(),
+            "created_by": row["created_by"],
+            "rating": row["rating"],
+            "updated_at": row["updated_at"].isoformat()
+        })
+
+    reviews_list.sort(key=lambda r: r["created_at"], reverse=True)
+    total = len(reviews_list)
+    reviews_list = reviews_list[offset:offset+limit]
+
+    return {
+        "reviews": reviews_list,
+        "count": total
+    }
+
+@app.patch("/events/{event_id}/reviews/{review_id}")
+async def update_review(event_id: str, review_id: str, request: Request, response: Response):
+    sid, session_data = get_session_data(request)
+    if not session_data or "user_id" not in session_data:
+        return Response(status_code=401)
+
+    user_id = session_data["user_id"]
+
+    body = await request.json()
+    comment = body.get("comment")
+    rating = body.get("rating")
+
+    if comment is not None and (not isinstance(comment, str) or len(comment) > 300):
+        res = JSONResponse(status_code=400, content={"message": 'invalid "comment" field'})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
+    if rating is not None and (not isinstance(rating, int) or rating < 1 or rating > 5):
+        res = JSONResponse(status_code=400, content={"message": 'invalid "rating" field'})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
+
+    existing = cassandra_execute(
+        "SELECT created_by FROM event_reviews WHERE event_id = %s AND created_by = %s",
+        (event_id, user_id)
+    )
+    if not existing or str(existing[0]["created_by"]) != user_id:
+        res = JSONResponse(status_code=404, content={"message": "Event not found"})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
+
+    updates = {}
+    if comment is not None:
+        updates["comment"] = comment
+    if rating is not None:
+        updates["rating"] = rating
+    updates["updated_at"] = datetime.now(timezone.utc)
+
+    set_clause = ", ".join([f"{k} = %s" for k in updates])
+    values = list(updates.values())
+    cassandra_execute(
+        f"UPDATE event_reviews SET {set_clause} WHERE event_id = %s AND created_by = %s",
+        (*values, event_id, user_id)
+    )
+
+    event = events_collection.find_one({"_id": ObjectId(event_id)})
+    if event:
+        invalidate_reviews_cache(event["title"])
+
     res = Response(status_code=204)
     res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
     return res
