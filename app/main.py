@@ -183,7 +183,6 @@ def get_reactions_for_title(title: str) -> dict:
     redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
     return {"likes": likes, "dislikes": dislikes}
 
-
 @app.get("/health")
 def health(request: Request, response: Response):
     sid = request.cookies.get(SESSION_COOKIE_NAME)
