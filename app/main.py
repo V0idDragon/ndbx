@@ -783,10 +783,9 @@ async def like_event(event_id: str, request: Request, response: Response):
 
     user_id = session_data["user_id"]
 
-    # Получаем предыдущую реакцию из Redis (быстро)
     old_value = get_user_reaction(event_id, user_id)
 
-    # Пишем в Cassandra
+
     s.execute(
         "INSERT INTO event_reactions (event_id, created_by, like_value, created_at) VALUES (%s, %s, %s, %s)",
         (event_id, user_id, 1, datetime.now(timezone.utc))
@@ -800,10 +799,8 @@ async def like_event(event_id: str, request: Request, response: Response):
     elif old_value == -1:
         redis_client.hincrby(cache_key, "dislikes", -1)
         redis_client.hincrby(cache_key, "likes", 1)
-    # если old_value == 1, ничего не делаем (повторный лайк)
     redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
 
-    # Сохраняем новую реакцию пользователя в Redis
     set_user_reaction(event_id, user_id, 1)
 
     redis_client.expire(redis_key(sid), get_ttl())
