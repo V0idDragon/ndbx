@@ -103,6 +103,13 @@ def _init_cassandra_background():
 
 def get_cassandra():
     global cass_session
+    if cass_session is not None:
+        return cass_session
+    for _ in range(10):
+        if cass_session is not None:
+            return cass_session
+        import time
+        time.sleep(0.5)
     return cass_session
     
 
