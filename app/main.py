@@ -159,7 +159,7 @@ def get_reactions_for_title(title: str) -> dict:
     try:
         cached = redis_client.hgetall(cache_key)
         if cached:
-            redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
+            redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "180")))
             return {"likes": int(cached.get("likes", 0)), "dislikes": int(cached.get("dislikes", 0))}
     except Exception:
         pass
