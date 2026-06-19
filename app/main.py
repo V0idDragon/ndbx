@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from cassandra.cluster import Cluster
 from cassandra.auth import PlainTextAuthProvider
 from cassandra.query import dict_factory
+from cassandra.query import SimpleStatement
 from cassandra import ConsistencyLevel
 
 
@@ -75,6 +76,14 @@ def init_cassandra():
 def get_cassandra():
     global cassandra_session
     return cassandra_session
+
+
+def cassandra_execute(query, params=None):
+    s = get_cassandra()
+    if not s:
+        raise RuntimeError("Cassandra not available")
+    statement = SimpleStatement(query, consistency_level=ConsistencyLevel.ONE)
+    return s.execute(statement, params or ())
     
 
 def generate_sid():
@@ -147,29 +156,23 @@ def get_title_md5(title: str) -> str:
     return hashlib.md5(title.encode('utf-8')).hexdigest()
 
 def get_reactions_for_title(title: str) -> dict:
+    cache_key = f"event:{get_title_md5(title)}:reactions"
+    cached = redis_client.hgetall(cache_key)
+    if cached:
+        redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
+        return {"likes": int(cached.get("likes", 0)), "dislikes": int(cached.get("dislikes", 0))}
+    
     event_ids = [str(e["_id"]) for e in events_collection.find({"title": title}, {"_id": 1})]
-    if not event_ids:
-        return {"likes": 0, "dislikes": 0}
-
-    s = get_cassandra()
-    if not s:
-        return {"likes": 0, "dislikes": 0}
-
     likes = 0
     dislikes = 0
-    query = "SELECT like_value FROM event_reactions WHERE event_id IN (%s)" % ",".join(["%s"] * len(event_ids))
-    rows = s.execute(query, event_ids)
-    for row in rows:
-        if row["like_value"] == 1:
-            likes += 1
-        elif row["like_value"] == -1:
-            dislikes += 1
-
-    result = {"likes": likes, "dislikes": dislikes}
-    cache_key = f"event:{get_title_md5(title)}:reactions"
-    redis_client.hset(cache_key, mapping=result)
-    redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
-    return result
+    for eid in event_ids:
+        rows = cassandra_execute("SELECT like_value FROM event_reactions WHERE event_id = %s", (eid,))
+        for row in rows:
+            if row.like_value == 1:
+                likes += 1
+            elif row.like_value == -1:
+                dislikes += 1
+    return {"likes": likes, "dislikes": likes}
 
 @app.get("/health")
 def health(request: Request, response: Response):
@@ -750,20 +753,13 @@ async def like_event(event_id: str, request: Request, response: Response):
         res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
         return res
 
-    s = get_cassandra()
-    if not s:
-        res = JSONResponse(status_code=503, content={"message": "Cassandra unavailable"})
-        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
-        return res
-
     user_id = session_data["user_id"]
 
     old_value = get_user_reaction(event_id, user_id)
 
-
-    s.execute(
-        "INSERT INTO event_reactions (event_id, created_by, like_value, created_at) VALUES (%s, %s, %s, %s)",
-        (event_id, user_id, 1, datetime.now(timezone.utc))
+    cassandra_execute(
+        "INSERT INTO event_reactions (event_id, like_value, created_by, created_at) VALUES (%s, %s, %s, %s)",
+        (event_id, 1, user_id, datetime.now(timezone.utc))
     )
 
     cache_key = f"event:{get_title_md5(event['title'])}:reactions"
@@ -805,19 +801,13 @@ async def dislike_event(event_id: str, request: Request, response: Response):
         res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
         return res
 
-    s = get_cassandra()
-    if not s:
-        res = JSONResponse(status_code=503, content={"message": "Cassandra unavailable"})
-        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
-        return res
-
     user_id = session_data["user_id"]
 
     old_value = get_user_reaction(event_id, user_id)
 
-    s.execute(
-        "INSERT INTO event_reactions (event_id, created_by, like_value, created_at) VALUES (%s, %s, %s, %s)",
-        (event_id, user_id, -1, datetime.now(timezone.utc))
+    cassandra_execute(
+        "INSERT INTO event_reactions (event_id, like_value, created_by, created_at) VALUES (%s, %s, %s, %s)",
+        (event_id, -1, user_id, datetime.now(timezone.utc))
     )
 
     cache_key = f"event:{get_title_md5(event['title'])}:reactions"
@@ -837,9 +827,10 @@ async def dislike_event(event_id: str, request: Request, response: Response):
     res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
     return res
 
+
 if __name__ == "__main__":
     init_cassandra()
-    
+
     raw_host = os.getenv("APP_HOST", "0.0.0.0")
     host = raw_host.replace("http://", "").replace("https://", "").strip("/")
     port = int(os.getenv("APP_PORT", "8080"))
