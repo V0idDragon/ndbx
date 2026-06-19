@@ -185,7 +185,7 @@ def get_reactions_for_title(title: str) -> dict:
                 dislikes += 1
 
     redis_client.hset(cache_key, mapping={"likes": likes, "dislikes": dislikes})
-    redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
+    redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "600")))
     return {"likes": likes, "dislikes": dislikes}
 
 @app.get("/health")
@@ -794,7 +794,7 @@ async def like_event(event_id: str, request: Request, response: Response):
     elif old_value == -1:
         redis_client.hincrby(cache_key, "dislikes", -1)
         redis_client.hincrby(cache_key, "likes", 1)
-    redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
+    redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "600")))
 
     redis_client.expire(redis_key(sid), get_ttl())
     res = Response(status_code=204)
@@ -850,7 +850,7 @@ async def dislike_event(event_id: str, request: Request, response: Response):
     elif old_value == 1:
         redis_client.hincrby(cache_key, "likes", -1)
         redis_client.hincrby(cache_key, "dislikes", 1)
-    redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
+    redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "600")))
 
     redis_client.expire(redis_key(sid), get_ttl())
     res = Response(status_code=204)
