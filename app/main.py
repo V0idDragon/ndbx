@@ -45,42 +45,36 @@ events_collection.create_index([("created_by", ASCENDING)])
 
 SESSION_COOKIE_NAME = "X-Session-Id"
 
-cass_session = None
-cass_lock = None
+cassandra_session = None
 
-def get_cassandra():
-    global cass_session, cass_lock
-    if cass_session is not None:
-        return cass_session
-    if cass_lock is None:
-        import threading
-        cass_lock = threading.Lock()
-    with cass_lock:
-        if cass_session is not None:
-            return cass_session
-        hosts = os.getenv("CASSANDRA_HOSTS", "cassandra-test").split(",")
-        port = int(os.getenv("CASSANDRA_PORT", "9042"))
-        keyspace = os.getenv("CASSANDRA_KEYSPACE", "testkeyspace")
+def init_cassandra():
+    global cassandra_session
+    hosts = [h.strip() for h in os.environ["CASSANDRA_HOSTS"].split(",") if h.strip()]
+    username = (os.environ.get("CASSANDRA_USERNAME") or "").strip()
+    password = os.environ.get("CASSANDRA_PASSWORD") or ""
+    auth_provider = PlainTextAuthProvider(username=username, password=password) if username or password else None
+    port = int(os.environ.get("CASSANDRA_PORT", "9042"))
+    for _ in range(60):
+        cluster = Cluster(hosts, port=port, auth_provider=auth_provider)
         try:
-            if os.getenv("CASSANDRA_USERNAME") and os.getenv("CASSANDRA_PASSWORD"):
-                from cassandra.auth import PlainTextAuthProvider
-                auth_provider = PlainTextAuthProvider(
-                    username=os.getenv("CASSANDRA_USERNAME"),
-                    password=os.getenv("CASSANDRA_PASSWORD")
-                )
-                cluster = Cluster(hosts, port=port, auth_provider=auth_provider,
-                                  protocol_version=4, connect_timeout=5)
-            else:
-                cluster = Cluster(hosts, port=port, protocol_version=4, connect_timeout=5)
-            session = cluster.connect(keyspace)
-            cl = getattr(ConsistencyLevel, os.getenv("CASSANDRA_CONSISTENCY", "ONE").upper(), ConsistencyLevel.ONE)
+            session = cluster.connect()
+            session.set_keyspace(os.environ.get("CASSANDRA_KEYSPACE", "testkeyspace"))
+            cl = getattr(ConsistencyLevel, os.environ.get("CASSANDRA_CONSISTENCY", "ONE").upper(), ConsistencyLevel.ONE)
             session.default_consistency_level = cl
             session.row_factory = dict_factory
-            cass_session = session
-            return cass_session
+            cassandra_session = session
+            print("Cassandra connected")
+            return
         except Exception as e:
-            print(f"Cassandra connection failed: {e}")
-            return None
+            print(f"Cassandra init attempt failed: {e}")
+            cluster.shutdown()
+            import time
+            time.sleep(2)
+    raise RuntimeError("Cannot connect to Cassandra")
+
+def get_cassandra():
+    global cassandra_session
+    return cassandra_session
     
 
 def generate_sid():
@@ -844,6 +838,8 @@ async def dislike_event(event_id: str, request: Request, response: Response):
     return res
 
 if __name__ == "__main__":
+    init_cassandra()
+    
     raw_host = os.getenv("APP_HOST", "0.0.0.0")
     host = raw_host.replace("http://", "").replace("https://", "").strip("/")
     port = int(os.getenv("APP_PORT", "8080"))

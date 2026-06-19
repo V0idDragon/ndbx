@@ -105,9 +105,9 @@ services:
     entrypoint: ["sh", "/scripts/init-shard.sh"]
     restart: "no"
 
-  cassandra:
+  cassandra-test:
     image: cassandra:4.1
-    container_name: cassandra
+    container_name: cassandra-test
     ports:
       - "${CASSANDRA_PORT}:${CASSANDRA_PORT}"
     volumes:
@@ -123,11 +123,11 @@ services:
   cassandra-init:
     image: cassandra:4.1
     depends_on:
-      cassandra:
+      cassandra-test:
         condition: service_healthy
     volumes:
       - ./scripts:/scripts
-    entrypoint: ["cqlsh", "cassandra", "-f", "/scripts/init-cassandra.cql"]
+    entrypoint: ["cqlsh", "cassandra-test", "-f", "/scripts/init-cassandra.cql"]
     restart: "no"    
 
 volumes:
