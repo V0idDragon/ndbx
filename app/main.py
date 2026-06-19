@@ -109,6 +109,17 @@ def get_ttl():
 def redis_key(sid: str):
     return f"sid:{sid}"
 
+def get_user_reaction(event_id: str, user_id: str):
+    key = f"user_reaction:{user_id}:{event_id}"
+    val = redis_client.get(key)
+    if val is None:
+        return None
+    return int(val)
+
+def set_user_reaction(event_id: str, user_id: str, like_value: int):
+    key = f"user_reaction:{user_id}:{event_id}"
+    redis_client.setex(key, 3600, like_value)
+
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -772,12 +783,10 @@ async def like_event(event_id: str, request: Request, response: Response):
 
     user_id = session_data["user_id"]
 
-    old_rows = s.execute(
-        "SELECT like_value FROM event_reactions WHERE event_id=%s AND created_by=%s",
-        (event_id, user_id)
-    )
-    old_value = old_rows[0]["like_value"] if old_rows else None
+    # Получаем предыдущую реакцию из Redis (быстро)
+    old_value = get_user_reaction(event_id, user_id)
 
+    # Пишем в Cassandra
     s.execute(
         "INSERT INTO event_reactions (event_id, created_by, like_value, created_at) VALUES (%s, %s, %s, %s)",
         (event_id, user_id, 1, datetime.now(timezone.utc))
@@ -791,12 +800,11 @@ async def like_event(event_id: str, request: Request, response: Response):
     elif old_value == -1:
         redis_client.hincrby(cache_key, "dislikes", -1)
         redis_client.hincrby(cache_key, "likes", 1)
+    # если old_value == 1, ничего не делаем (повторный лайк)
     redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
 
-    def prolong_ttl():
-        time.sleep(1)
-        redis_client.expire(cache_key, 600)
-    threading.Thread(target=prolong_ttl, daemon=True).start()
+    # Сохраняем новую реакцию пользователя в Redis
+    set_user_reaction(event_id, user_id, 1)
 
     redis_client.expire(redis_key(sid), get_ttl())
     res = Response(status_code=204)
@@ -833,11 +841,7 @@ async def dislike_event(event_id: str, request: Request, response: Response):
 
     user_id = session_data["user_id"]
 
-    old_rows = s.execute(
-        "SELECT like_value FROM event_reactions WHERE event_id=%s AND created_by=%s",
-        (event_id, user_id)
-    )
-    old_value = old_rows[0]["like_value"] if old_rows else None
+    old_value = get_user_reaction(event_id, user_id)
 
     s.execute(
         "INSERT INTO event_reactions (event_id, created_by, like_value, created_at) VALUES (%s, %s, %s, %s)",
@@ -854,10 +858,7 @@ async def dislike_event(event_id: str, request: Request, response: Response):
         redis_client.hincrby(cache_key, "dislikes", 1)
     redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
 
-    def prolong_ttl():
-        time.sleep(1)
-        redis_client.expire(cache_key, 600)
-    threading.Thread(target=prolong_ttl, daemon=True).start()
+    set_user_reaction(event_id, user_id, -1)
 
     redis_client.expire(redis_key(sid), get_ttl())
     res = Response(status_code=204)
