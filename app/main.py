@@ -48,7 +48,10 @@ SESSION_COOKIE_NAME = "X-Session-Id"
 cass_session = None
 cass_lock = None
 
-def init_cassandra():
+cass_session = None
+cass_lock = None
+
+def _init_cassandra_background():
     global cass_session, cass_lock
     if cass_lock is None:
         import threading
@@ -97,13 +100,9 @@ def init_cassandra():
                 import time
                 time.sleep(2)
         print("Failed to initialize Cassandra after retries")
-        sys.exit(1)
 
 def get_cassandra():
     global cass_session
-    if cass_session is not None:
-        return cass_session
-    init_cassandra()
     return cass_session
     
 
@@ -872,7 +871,7 @@ if __name__ == "__main__":
     host = raw_host.replace("http://", "").replace("https://", "").strip("/")
     port = int(os.getenv("APP_PORT", "8080"))
 
-    init_cassandra()
+    threading.Thread(target=_init_cassandra_background, daemon=True).start()
 
     uvicorn.run(
         app,
