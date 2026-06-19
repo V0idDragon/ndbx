@@ -48,53 +48,63 @@ SESSION_COOKIE_NAME = "X-Session-Id"
 cass_session = None
 cass_lock = None
 
-def get_cassandra():
+def init_cassandra():
     global cass_session, cass_lock
-    if cass_session is not None:
-        return cass_session
     if cass_lock is None:
         import threading
         cass_lock = threading.Lock()
     with cass_lock:
         if cass_session is not None:
-            return cass_session
+            return
         hosts = os.getenv("CASSANDRA_HOSTS", "cassandra-test").split(",")
         port = int(os.getenv("CASSANDRA_PORT", "9042"))
         keyspace = os.getenv("CASSANDRA_KEYSPACE", "testkeyspace")
-        try:
-            if os.getenv("CASSANDRA_USERNAME") and os.getenv("CASSANDRA_PASSWORD"):
-                from cassandra.auth import PlainTextAuthProvider
-                auth_provider = PlainTextAuthProvider(
-                    username=os.getenv("CASSANDRA_USERNAME"),
-                    password=os.getenv("CASSANDRA_PASSWORD")
-                )
-                cluster = Cluster(hosts, port=port, auth_provider=auth_provider,
-                                  protocol_version=4, connect_timeout=5)
-            else:
-                cluster = Cluster(hosts, port=port, protocol_version=4, connect_timeout=5)
-            session = cluster.connect()
-            session.execute(f"""
-                CREATE KEYSPACE IF NOT EXISTS {keyspace}
-                WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 1}}
-            """)
-            session.set_keyspace(keyspace)
-            session.execute("""
-                CREATE TABLE IF NOT EXISTS event_reactions (
-                    event_id text,
-                    created_by text,
-                    like_value tinyint,
-                    created_at timestamp,
-                    PRIMARY KEY (event_id, created_by)
-                )
-            """)
-            cl = getattr(ConsistencyLevel, os.getenv("CASSANDRA_CONSISTENCY", "ONE").upper(), ConsistencyLevel.ONE)
-            session.default_consistency_level = cl
-            session.row_factory = dict_factory
-            cass_session = session
-            return cass_session
-        except Exception as e:
-            print(f"Cassandra connection/init failed: {e}")
-            return None
+        for attempt in range(10):
+            try:
+                if os.getenv("CASSANDRA_USERNAME") and os.getenv("CASSANDRA_PASSWORD"):
+                    from cassandra.auth import PlainTextAuthProvider
+                    auth_provider = PlainTextAuthProvider(
+                        username=os.getenv("CASSANDRA_USERNAME"),
+                        password=os.getenv("CASSANDRA_PASSWORD")
+                    )
+                    cluster = Cluster(hosts, port=port, auth_provider=auth_provider,
+                                      protocol_version=4, connect_timeout=5)
+                else:
+                    cluster = Cluster(hosts, port=port, protocol_version=4, connect_timeout=5)
+                session = cluster.connect()
+                session.execute(f"""
+                    CREATE KEYSPACE IF NOT EXISTS {keyspace}
+                    WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 1}}
+                """)
+                session.set_keyspace(keyspace)
+                session.execute("""
+                    CREATE TABLE IF NOT EXISTS event_reactions (
+                        event_id text,
+                        created_by text,
+                        like_value tinyint,
+                        created_at timestamp,
+                        PRIMARY KEY (event_id, created_by)
+                    )
+                """)
+                cl = getattr(ConsistencyLevel, os.getenv("CASSANDRA_CONSISTENCY", "ONE").upper(), ConsistencyLevel.ONE)
+                session.default_consistency_level = cl
+                session.row_factory = dict_factory
+                cass_session = session
+                print("Cassandra initialized successfully")
+                return
+            except Exception as e:
+                print(f"Cassandra init attempt {attempt+1} failed: {e}")
+                import time
+                time.sleep(2)
+        print("Failed to initialize Cassandra after retries")
+        sys.exit(1)
+
+def get_cassandra():
+    global cass_session
+    if cass_session is not None:
+        return cass_session
+    init_cassandra()
+    return cass_session
     
 
 def generate_sid():
@@ -861,6 +871,8 @@ if __name__ == "__main__":
     raw_host = os.getenv("APP_HOST", "0.0.0.0")
     host = raw_host.replace("http://", "").replace("https://", "").strip("/")
     port = int(os.getenv("APP_PORT", "8080"))
+
+    init_cassandra()
 
     uvicorn.run(
         app,
