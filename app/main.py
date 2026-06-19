@@ -161,15 +161,6 @@ def get_title_md5(title: str) -> str:
     return hashlib.md5(title.encode('utf-8')).hexdigest()
 
 def get_reactions_for_title(title: str) -> dict:
-    cache_key = f"event:{get_title_md5(title)}:reactions"
-    try:
-        cached = redis_client.hgetall(cache_key)
-        if cached:
-            redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
-            return {"likes": int(cached.get("likes", 0)), "dislikes": int(cached.get("dislikes", 0))}
-    except Exception:
-        pass
-
     s = get_cassandra()
     if not s:
         return {"likes": 0, "dislikes": 0}
@@ -185,6 +176,7 @@ def get_reactions_for_title(title: str) -> dict:
             elif row["like_value"] == -1:
                 dislikes += 1
 
+    cache_key = f"event:{get_title_md5(title)}:reactions"
     redis_client.hset(cache_key, mapping={"likes": likes, "dislikes": dislikes})
     redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
     return {"likes": likes, "dislikes": dislikes}
