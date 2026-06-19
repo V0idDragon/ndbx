@@ -155,26 +155,15 @@ def get_title_md5(title: str) -> str:
     return hashlib.md5(title.encode('utf-8')).hexdigest()
 
 def get_reactions_for_title(title: str) -> dict:
-    s = get_cassandra()
-    if not s:
-        return {"likes": 0, "dislikes": 0}
-    
-    event_ids = [str(e["_id"]) for e in events_collection.find({"title": title}, {"_id": 1})]
-    likes = 0
-    dislikes = 0
-    for eid in event_ids:
-        rows = s.execute("SELECT like_value FROM event_reactions WHERE event_id=%s", (eid,))
-        for row in rows:
-            if row["like_value"] == 1:
-                likes += 1
-            elif row["like_value"] == -1:
-                dislikes += 1
-
     cache_key = f"event:{get_title_md5(title)}:reactions"
-    redis_client.hset(cache_key, mapping={"likes": likes, "dislikes": dislikes})
-    redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
-
-    return {"likes": likes, "dislikes": dislikes}
+    try:
+        cached = redis_client.hgetall(cache_key)
+        if cached:
+            redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
+            return {"likes": int(cached.get("likes", 0)), "dislikes": int(cached.get("dislikes", 0))}
+    except Exception:
+        pass
+    return {"likes": 0, "dislikes": 0}
 
 
 @app.get("/health")
