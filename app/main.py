@@ -48,12 +48,6 @@ SESSION_COOKIE_NAME = "X-Session-Id"
 cass_session = None
 cass_lock = None
 
-cass_session = None
-cass_lock = None
-
-cass_session = None
-cass_lock = None
-
 def get_cassandra():
     global cass_session, cass_lock
     if cass_session is not None:
