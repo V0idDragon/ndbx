@@ -44,25 +44,21 @@ events_collection.create_index([("created_by", ASCENDING)])
 SESSION_COOKIE_NAME = "X-Session-Id"
 
 cass_session = None
-cassandra_lock = None
+cass_lock = None
 
 def get_cassandra():
-    global cass_session, cassandra_lock
+    global cass_session, cass_lock
     if cass_session is not None:
         return cass_session
-
-    if cassandra_lock is None:
+    if cass_lock is None:
         import threading
-        cassandra_lock = threading.Lock()
-
-    with cassandra_lock:
+        cass_lock = threading.Lock()
+    with cass_lock:
         if cass_session is not None:
             return cass_session
-
         hosts = os.getenv("CASSANDRA_HOSTS", "cassandra").split(",")
         port = int(os.getenv("CASSANDRA_PORT", "9042"))
         keyspace = os.getenv("CASSANDRA_KEYSPACE", "testkeyspace")
-
         for attempt in range(5):
             try:
                 if os.getenv("CASSANDRA_USERNAME") and os.getenv("CASSANDRA_PASSWORD"):
@@ -74,7 +70,6 @@ def get_cassandra():
                     cluster = Cluster(hosts, port=port, auth_provider=auth_provider, protocol_version=4)
                 else:
                     cluster = Cluster(hosts, port=port, protocol_version=4)
-
                 session = cluster.connect()
                 session.execute(f"""
                     CREATE KEYSPACE IF NOT EXISTS {keyspace}
@@ -94,13 +89,12 @@ def get_cassandra():
                 session.default_consistency_level = cl
                 session.row_factory = dict_factory
                 cass_session = session
-                print("Cassandra connected")
                 return cass_session
             except Exception as e:
                 print(f"Cassandra connection attempt {attempt+1} failed: {e}")
                 import time
                 time.sleep(2)
-    return None
+        return None
 
 def generate_sid():
     return secrets.token_hex(16)
