@@ -61,7 +61,7 @@ def get_cassandra():
         hosts = os.getenv("CASSANDRA_HOSTS", "cassandra-test").split(",")
         port = int(os.getenv("CASSANDRA_PORT", "9042"))
         keyspace = os.getenv("CASSANDRA_KEYSPACE", "testkeyspace")
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 if os.getenv("CASSANDRA_USERNAME") and os.getenv("CASSANDRA_PASSWORD"):
                     from cassandra.auth import PlainTextAuthProvider
@@ -70,9 +70,9 @@ def get_cassandra():
                         password=os.getenv("CASSANDRA_PASSWORD")
                     )
                     cluster = Cluster(hosts, port=port, auth_provider=auth_provider,
-                                      protocol_version=4, connect_timeout=5)
+                                      protocol_version=4, connect_timeout=2)
                 else:
-                    cluster = Cluster(hosts, port=port, protocol_version=4, connect_timeout=5)
+                    cluster = Cluster(hosts, port=port, protocol_version=4, connect_timeout=2)
                 session = cluster.connect(keyspace)
                 cl = getattr(ConsistencyLevel, os.getenv("CASSANDRA_CONSISTENCY", "ONE").upper(), ConsistencyLevel.ONE)
                 session.default_consistency_level = cl
@@ -81,9 +81,9 @@ def get_cassandra():
                 return cass_session
             except Exception as e:
                 print(f"Cassandra connection attempt {attempt+1} failed: {e}")
-                if attempt == 0:
+                if attempt < 2:
                     import time
-                    time.sleep(0.5)
+                    time.sleep(1)
         return None
     
 
