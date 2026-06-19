@@ -61,30 +61,40 @@ def get_cassandra():
         hosts = os.getenv("CASSANDRA_HOSTS", "cassandra-test").split(",")
         port = int(os.getenv("CASSANDRA_PORT", "9042"))
         keyspace = os.getenv("CASSANDRA_KEYSPACE", "testkeyspace")
-        for attempt in range(3):
-            try:
-                if os.getenv("CASSANDRA_USERNAME") and os.getenv("CASSANDRA_PASSWORD"):
-                    from cassandra.auth import PlainTextAuthProvider
-                    auth_provider = PlainTextAuthProvider(
-                        username=os.getenv("CASSANDRA_USERNAME"),
-                        password=os.getenv("CASSANDRA_PASSWORD")
-                    )
-                    cluster = Cluster(hosts, port=port, auth_provider=auth_provider,
-                                      protocol_version=4, connect_timeout=2)
-                else:
-                    cluster = Cluster(hosts, port=port, protocol_version=4, connect_timeout=2)
-                session = cluster.connect(keyspace)
-                cl = getattr(ConsistencyLevel, os.getenv("CASSANDRA_CONSISTENCY", "ONE").upper(), ConsistencyLevel.ONE)
-                session.default_consistency_level = cl
-                session.row_factory = dict_factory
-                cass_session = session
-                return cass_session
-            except Exception as e:
-                print(f"Cassandra connection attempt {attempt+1} failed: {e}")
-                if attempt < 2:
-                    import time
-                    time.sleep(1)
-        return None
+        try:
+            if os.getenv("CASSANDRA_USERNAME") and os.getenv("CASSANDRA_PASSWORD"):
+                from cassandra.auth import PlainTextAuthProvider
+                auth_provider = PlainTextAuthProvider(
+                    username=os.getenv("CASSANDRA_USERNAME"),
+                    password=os.getenv("CASSANDRA_PASSWORD")
+                )
+                cluster = Cluster(hosts, port=port, auth_provider=auth_provider,
+                                  protocol_version=4, connect_timeout=5)
+            else:
+                cluster = Cluster(hosts, port=port, protocol_version=4, connect_timeout=5)
+            session = cluster.connect()
+            session.execute(f"""
+                CREATE KEYSPACE IF NOT EXISTS {keyspace}
+                WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 1}}
+            """)
+            session.set_keyspace(keyspace)
+            session.execute("""
+                CREATE TABLE IF NOT EXISTS event_reactions (
+                    event_id text,
+                    created_by text,
+                    like_value tinyint,
+                    created_at timestamp,
+                    PRIMARY KEY (event_id, created_by)
+                )
+            """)
+            cl = getattr(ConsistencyLevel, os.getenv("CASSANDRA_CONSISTENCY", "ONE").upper(), ConsistencyLevel.ONE)
+            session.default_consistency_level = cl
+            session.row_factory = dict_factory
+            cass_session = session
+            return cass_session
+        except Exception as e:
+            print(f"Cassandra connection/init failed: {e}")
+            return None
     
 
 def generate_sid():
