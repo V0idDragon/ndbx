@@ -5,6 +5,8 @@ import secrets
 import bcrypt
 import hashlib
 import json
+import threading
+import time
 
 from bson import ObjectId
 from pymongo import MongoClient, ASCENDING
@@ -791,6 +793,11 @@ async def like_event(event_id: str, request: Request, response: Response):
         redis_client.hincrby(cache_key, "likes", 1)
     redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
 
+    def prolong_ttl():
+        time.sleep(1)
+        redis_client.expire(cache_key, 600)
+    threading.Thread(target=prolong_ttl, daemon=True).start()
+
     redis_client.expire(redis_key(sid), get_ttl())
     res = Response(status_code=204)
     res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
@@ -846,6 +853,11 @@ async def dislike_event(event_id: str, request: Request, response: Response):
         redis_client.hincrby(cache_key, "likes", -1)
         redis_client.hincrby(cache_key, "dislikes", 1)
     redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
+
+    def prolong_ttl():
+        time.sleep(1)
+        redis_client.expire(cache_key, 600)
+    threading.Thread(target=prolong_ttl, daemon=True).start()
 
     redis_client.expire(redis_key(sid), get_ttl())
     res = Response(status_code=204)
