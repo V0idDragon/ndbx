@@ -168,15 +168,29 @@ def get_title_md5(title: str) -> str:
     return hashlib.md5(title.encode('utf-8')).hexdigest()
 
 def get_reactions_for_title(title: str) -> dict:
+    event_ids = [str(e["_id"]) for e in events_collection.find({"title": title}, {"_id": 1})]
+    if not event_ids:
+        return {"likes": 0, "dislikes": 0}
+
+    s = get_cassandra()
+    if not s:
+        return {"likes": 0, "dislikes": 0}
+
+    likes = 0
+    dislikes = 0
+    query = "SELECT like_value FROM event_reactions WHERE event_id IN (%s)" % ",".join(["%s"] * len(event_ids))
+    rows = s.execute(query, event_ids)
+    for row in rows:
+        if row["like_value"] == 1:
+            likes += 1
+        elif row["like_value"] == -1:
+            dislikes += 1
+
+    result = {"likes": likes, "dislikes": dislikes}
     cache_key = f"event:{get_title_md5(title)}:reactions"
-    try:
-        cached = redis_client.hgetall(cache_key)
-        if cached:
-            redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
-            return {"likes": int(cached.get("likes", 0)), "dislikes": int(cached.get("dislikes", 0))}
-    except Exception:
-        pass
-    return {"likes": 0, "dislikes": 0}
+    redis_client.hset(cache_key, mapping=result)
+    redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
+    return result
 
 @app.get("/health")
 def health(request: Request, response: Response):
