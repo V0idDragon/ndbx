@@ -913,7 +913,7 @@ async def create_review(event_id: str, request: Request, response: Response):
         (event_id, user_id, review_id, rating, comment, now, now)
     )
 
-    invalidate_reviews_cache(event["title"])
+    get_reviews_summary_for_title(event["title"])
 
     redis_client.expire(redis_key(sid), get_ttl())
     res = JSONResponse(status_code=201, content={"id": str(review_id)})
@@ -996,7 +996,7 @@ async def update_review(event_id: str, review_id: str, request: Request, respons
 
     event = events_collection.find_one({"_id": ObjectId(event_id)})
     if event:
-        invalidate_reviews_cache(event["title"])
+        get_reviews_summary_for_title(event["title"])
 
     res = Response(status_code=204)
     res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
