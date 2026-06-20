@@ -19,7 +19,7 @@ from cassandra.auth import PlainTextAuthProvider
 from cassandra.query import dict_factory
 from cassandra.query import SimpleStatement
 from cassandra import ConsistencyLevel
-
+from neo4j import GraphDatabase
 
 app = FastAPI()
 
@@ -48,6 +48,8 @@ events_collection.create_index([("created_by", ASCENDING)])
 SESSION_COOKIE_NAME = "X-Session-Id"
 
 cassandra_session = None
+
+neo4j_driver = None
 
 def init_cassandra():
     global cassandra_session
@@ -108,6 +110,48 @@ def get_user_reaction(event_id: str, user_id: str):
 def set_user_reaction(event_id: str, user_id: str, like_value: int):
     key = f"user_reaction:{user_id}:{event_id}"
     redis_client.setex(key, 3600, like_value)
+
+def init_neo4j():
+    global neo4j_driver
+    uri = os.environ["NEO4J_URL"]
+    auth = (os.environ["NEO4J_USERNAME"], os.environ["NEO4J_PASSWORD"])
+    driver = GraphDatabase.driver(uri, auth=auth)
+    for attempt in range(60):
+        try:
+            driver.verify_connectivity()
+            neo4j_driver = driver
+            print("Neo4j connected")
+            return
+        except Exception as e:
+            print(f"Neo4j connection attempt {attempt+1} failed: {e}")
+            import time
+            time.sleep(2)
+    raise RuntimeError("Cannot connect to Neo4j")
+
+def get_neo4j_driver():
+    global neo4j_driver
+    return neo4j_driver
+
+
+def create_neo4j_user(user_id: str):
+    with get_neo4j_driver().session() as session:
+        session.run("MERGE (:User {id: $id})", id=user_id)
+
+def create_neo4j_event(event_id: str, title: str):
+    with get_neo4j_driver().session() as session:
+        session.run("MERGE (:Event {id: $id}) SET e.title = $title", id=event_id, title=title)
+
+def create_neo4j_like(user_id: str, event_id: str, title: str):
+    with get_neo4j_driver().session() as session:
+        session.run(
+            """
+            MERGE (u:User {id: $user_id})
+            MERGE (e:Event {id: $event_id})
+            SET e.title = $title
+            MERGE (u)-[:LIKED]->(e)
+            """,
+            user_id=user_id, event_id=event_id, title=title
+        )
 
 def get_reviews_summary_for_title(title: str) -> dict:
     cache_key = f"event:{get_title_md5(title)}:reviews"
@@ -215,6 +259,42 @@ def get_reactions_for_title(title: str) -> dict:
             elif row.like_value == -1:
                 dislikes += 1
     return {"likes": likes, "dislikes": likes}
+
+
+def get_recommendations(user_id: str) -> list:
+    with get_neo4j_driver().session() as session:
+        result = session.run(
+            """
+            MATCH (me:User {id: $user_id})-[:LIKED]->(:Event)<-[:LIKED]-(other:User)-[:LIKED]->(event:Event)
+            WHERE NOT (me)-[:LIKED]->(event)
+            RETURN event.id AS id, count(*) AS score
+            ORDER BY score DESC
+            """,
+            user_id=user_id
+        )
+        event_ids = [record["id"] for record in result]
+
+    if not event_ids:
+        return []
+
+    docs = []
+    for eid in event_ids:
+        try:
+            doc = events_collection.find_one({"_id": ObjectId(eid)})
+            if doc:
+                docs.append(doc)
+        except Exception:
+            pass
+
+    seen_titles = set()
+    unique_docs = []
+    for doc in docs:
+        title = doc.get("title")
+        if title not in seen_titles:
+            seen_titles.add(title)
+            unique_docs.append(doc)
+
+    return unique_docs
 
 @app.get("/health")
 def health(request: Request, response: Response):
@@ -326,6 +406,7 @@ async def create_user(request: Request, response: Response):
     }
 
     result = users_collection.insert_one(user)
+    create_neo4j_user(str(result.inserted_id))
 
     sid = generate_sid()
     key = redis_key(sid)
@@ -489,6 +570,7 @@ async def create_event(request: Request, response: Response):
     }
 
     result = events_collection.insert_one(event)
+    create_neo4j_event(str(result.inserted_id), title)
 
     ttl = get_ttl()
     redis_client.expire(redis_key(sid), ttl)
@@ -823,6 +905,7 @@ async def like_event(event_id: str, request: Request, response: Response):
     redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
 
     set_user_reaction(event_id, user_id, 1)
+    create_neo4j_like(user_id, event_id, event["title"])
 
     redis_client.expire(redis_key(sid), get_ttl())
     res = Response(status_code=204)
@@ -1017,8 +1100,38 @@ async def update_review(event_id: str, review_id: str, request: Request, respons
     return res
 
 
+@app.get("/recommendations")
+def recommendations(request: Request, response: Response):
+    sid, session_data = get_session_data(request)
+    if not session_data or "user_id" not in session_data:
+        return Response(status_code=401)
+
+    user_id = session_data["user_id"]
+
+    cache_key = f"user:{user_id}:recomms"
+    cached = redis_client.hget(cache_key, "events")
+    if cached:
+        events = json.loads(cached)
+        redis_client.expire(redis_key(sid), get_ttl())
+        res = JSONResponse(content={"events": events})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
+
+    docs = get_recommendations(user_id)
+    events = [event_to_response(doc) for doc in docs]
+
+    redis_client.hset(cache_key, "events", json.dumps(events))
+    redis_client.expire(cache_key, int(os.getenv("APP_RECOMMENDATIONS_TTL", "60")))
+
+    redis_client.expire(redis_key(sid), get_ttl())
+    res = JSONResponse(content={"events": events})
+    res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+    return res    
+
+
 if __name__ == "__main__":
     init_cassandra()
+    init_neo4j()
 
     raw_host = os.getenv("APP_HOST", "0.0.0.0")
     host = raw_host.replace("http://", "").replace("https://", "").strip("/")

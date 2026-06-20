@@ -12,6 +12,8 @@ services:
         condition: service_completed_successfully
       cassandra-init:
         condition: service_completed_successfully
+      neo4j-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   redis:
@@ -130,6 +132,30 @@ services:
     entrypoint: ["cqlsh", "cassandra-test", "-f", "/scripts/init-cassandra.cql"]
     restart: "no"    
 
+
+  neo4j:
+    image: neo4j:5
+    environment:
+      NEO4J_AUTH: "${NEO4J_USERNAME}/${NEO4J_PASSWORD}"
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j-data:/data
+    restart: unless-stopped
+
+  neo4j-init:
+    image: neo4j:5
+    env_file: .env.local
+    depends_on:
+      neo4j:
+        condition: service_started
+    entrypoint: ["bash", "/scripts/init-neo4j.sh"]
+    volumes:
+      - ./scripts/init-neo4j.sh:/scripts/init-neo4j.sh:ro
+    restart: "no"
+    
+
 volumes:
   mongo-config-data:
   mongo-shard1-1-data:
@@ -139,3 +165,4 @@ volumes:
   mongo-shard2-2-data:
   mongo-shard2-3-data:
   cassandra-data:
+  neo4j-data:
