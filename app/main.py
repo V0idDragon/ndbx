@@ -144,14 +144,20 @@ def set_user_reaction(event_id: str, user_id: str, like_value: int):
 
 
 def create_neo4j_user(user_id: str):
+    if not get_neo4j_driver():
+        return
     with get_neo4j_driver().session() as session:
         session.run("MERGE (:User {id: $id})", id=user_id)
 
 def create_neo4j_event(event_id: str, title: str):
+    if not get_neo4j_driver():
+        return
     with get_neo4j_driver().session() as session:
         session.run("MERGE (:Event {id: $id}) SET e.title = $title", id=event_id, title=title)
 
 def create_neo4j_like(user_id: str, event_id: str, title: str):
+    if not get_neo4j_driver():
+        return
     with get_neo4j_driver().session() as session:
         session.run(
             """
