@@ -13,6 +13,7 @@ from bson import ObjectId
 from pymongo import MongoClient, ASCENDING
 from datetime import datetime, timezone
 from fastapi import FastAPI, Request, Response
+from contextlib import asynccontextmanager
 from fastapi.responses import JSONResponse
 from cassandra.cluster import Cluster
 from cassandra.auth import PlainTextAuthProvider
@@ -21,7 +22,62 @@ from cassandra.query import SimpleStatement
 from cassandra import ConsistencyLevel
 from neo4j import GraphDatabase
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(fastapi_app: FastAPI):
+    cassandra_cluster_obj = None
+    cassandra_session_obj = None
+    hosts = [h.strip() for h in os.environ["CASSANDRA_HOSTS"].split(",") if h.strip()]
+    port = int(os.environ.get("CASSANDRA_PORT", "9042"))
+    keyspace = os.environ.get("CASSANDRA_KEYSPACE", "testkeyspace")
+    username = (os.environ.get("CASSANDRA_USERNAME") or "").strip()
+    password = os.environ.get("CASSANDRA_PASSWORD") or ""
+    auth_provider = PlainTextAuthProvider(username=username, password=password) if username or password else None
+
+    for _ in range(60):
+        cluster = Cluster(hosts, port=port, auth_provider=auth_provider)
+        try:
+            session = cluster.connect()
+            session.set_keyspace(keyspace)
+            cl = getattr(ConsistencyLevel, os.environ.get("CASSANDRA_CONSISTENCY", "ONE").upper(), ConsistencyLevel.ONE)
+            session.default_consistency_level = cl
+            session.row_factory = dict_factory
+            cassandra_cluster_obj = cluster
+            cassandra_session_obj = session
+            print("Cassandra connected")
+            break
+        except Exception as e:
+            print(f"Cassandra init attempt failed: {e}")
+            cluster.shutdown()
+            time.sleep(2)
+
+    fastapi_app.state.cassandra_cluster = cassandra_cluster_obj
+    fastapi_app.state.cassandra_session = cassandra_session_obj
+
+    neo4j_driver = None
+    uri = os.environ.get("NEO4J_URL")
+    if uri:
+        auth = (os.environ["NEO4J_USERNAME"], os.environ["NEO4J_PASSWORD"])
+        driver = GraphDatabase.driver(uri, auth=auth)
+        for _ in range(60):
+            try:
+                driver.verify_connectivity()
+                neo4j_driver = driver
+                print("Neo4j connected")
+                break
+            except Exception as e:
+                print(f"Neo4j init attempt failed: {e}")
+                time.sleep(2)
+    fastapi_app.state.neo4j_driver = neo4j_driver
+
+    try:
+        yield
+    finally:
+        if cassandra_cluster_obj:
+            cassandra_cluster_obj.shutdown()
+        if neo4j_driver:
+            neo4j_driver.close()
+
+app = FastAPI(lifespan=lifespan)
 
 redis_client = redis.Redis(
     host=os.getenv("REDIS_HOST"),
@@ -47,42 +103,15 @@ events_collection.create_index([("created_by", ASCENDING)])
 
 SESSION_COOKIE_NAME = "X-Session-Id"
 
-cassandra_session = None
+def get_cassandra_session():
+    return app.state.cassandra_session
 
-neo4j_driver = None
-
-def init_cassandra():
-    global cassandra_session
-    hosts = [h.strip() for h in os.environ["CASSANDRA_HOSTS"].split(",") if h.strip()]
-    username = (os.environ.get("CASSANDRA_USERNAME") or "").strip()
-    password = os.environ.get("CASSANDRA_PASSWORD") or ""
-    auth_provider = PlainTextAuthProvider(username=username, password=password) if username or password else None
-    port = int(os.environ.get("CASSANDRA_PORT", "9042"))
-    for _ in range(60):
-        cluster = Cluster(hosts, port=port, auth_provider=auth_provider)
-        try:
-            session = cluster.connect()
-            session.set_keyspace(os.environ.get("CASSANDRA_KEYSPACE", "testkeyspace"))
-            cl = getattr(ConsistencyLevel, os.environ.get("CASSANDRA_CONSISTENCY", "ONE").upper(), ConsistencyLevel.ONE)
-            session.default_consistency_level = cl
-            session.row_factory = dict_factory
-            cassandra_session = session
-            print("Cassandra connected")
-            return
-        except Exception as e:
-            print(f"Cassandra init attempt failed: {e}")
-            cluster.shutdown()
-            import time
-            time.sleep(2)
-    raise RuntimeError("Cannot connect to Cassandra")
-
-def get_cassandra():
-    global cassandra_session
-    return cassandra_session
+def get_neo4j_driver():
+    return app.state.neo4j_driver
 
 
 def cassandra_execute(query, params=None):
-    s = get_cassandra()
+    s = get_cassandra_session()
     if not s:
         raise RuntimeError("Cassandra not available")
     statement = SimpleStatement(query, consistency_level=ConsistencyLevel.ONE)
@@ -111,26 +140,7 @@ def set_user_reaction(event_id: str, user_id: str, like_value: int):
     key = f"user_reaction:{user_id}:{event_id}"
     redis_client.setex(key, 3600, like_value)
 
-def init_neo4j():
-    global neo4j_driver
-    uri = os.environ["NEO4J_URL"]
-    auth = (os.environ["NEO4J_USERNAME"], os.environ["NEO4J_PASSWORD"])
-    driver = GraphDatabase.driver(uri, auth=auth)
-    for attempt in range(60):
-        try:
-            driver.verify_connectivity()
-            neo4j_driver = driver
-            print("Neo4j connected")
-            return
-        except Exception as e:
-            print(f"Neo4j connection attempt {attempt+1} failed: {e}")
-            import time
-            time.sleep(2)
-    raise RuntimeError("Cannot connect to Neo4j")
 
-def get_neo4j_driver():
-    global neo4j_driver
-    return neo4j_driver
 
 
 def create_neo4j_user(user_id: str):
@@ -1143,8 +1153,6 @@ def recommendations(request: Request, response: Response):
 
 
 if __name__ == "__main__":
-    init_cassandra()
-    init_neo4j()
 
     raw_host = os.getenv("APP_HOST", "0.0.0.0")
     host = raw_host.replace("http://", "").replace("https://", "").strip("/")
