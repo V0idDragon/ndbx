@@ -33,7 +33,7 @@ async def lifespan(fastapi_app: FastAPI):
     password = os.environ.get("CASSANDRA_PASSWORD") or ""
     auth_provider = PlainTextAuthProvider(username=username, password=password) if username or password else None
 
-    for _ in range(60):
+    for _ in range(5):
         cluster = Cluster(hosts, port=port, auth_provider=auth_provider)
         try:
             session = cluster.connect()
@@ -58,7 +58,7 @@ async def lifespan(fastapi_app: FastAPI):
     if uri:
         auth = (os.environ["NEO4J_USERNAME"], os.environ["NEO4J_PASSWORD"])
         driver = GraphDatabase.driver(uri, auth=auth)
-        for _ in range(60):
+        for _ in range(5):
             try:
                 driver.verify_connectivity()
                 neo4j_driver = driver
