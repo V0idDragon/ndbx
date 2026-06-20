@@ -22,6 +22,18 @@ from cassandra.query import SimpleStatement
 from cassandra import ConsistencyLevel
 from neo4j import GraphDatabase
 
+def connect_neo4j():
+    auth = (os.environ.get("NEO4J_USERNAME") or "", os.environ.get("NEO4J_PASSWORD") or "")
+    driver = GraphDatabase.driver(os.environ["NEO4J_URL"], auth=auth)
+    for _ in range(60):
+        try:
+            driver.verify_connectivity()
+            return driver
+        except Exception:
+            time.sleep(2)
+    driver.close()
+    return None
+
 @asynccontextmanager
 async def lifespan(fastapi_app: FastAPI):
     cassandra_cluster_obj = None
@@ -33,7 +45,7 @@ async def lifespan(fastapi_app: FastAPI):
     password = os.environ.get("CASSANDRA_PASSWORD") or ""
     auth_provider = PlainTextAuthProvider(username=username, password=password) if username or password else None
 
-    for _ in range(5):
+    for _ in range(10):
         cluster = Cluster(hosts, port=port, auth_provider=auth_provider)
         try:
             session = cluster.connect()
@@ -54,19 +66,8 @@ async def lifespan(fastapi_app: FastAPI):
     fastapi_app.state.cassandra_session = cassandra_session_obj
 
     neo4j_driver = None
-    uri = os.environ.get("NEO4J_URL")
-    if uri:
-        auth = (os.environ["NEO4J_USERNAME"], os.environ["NEO4J_PASSWORD"])
-        driver = GraphDatabase.driver(uri, auth=auth)
-        for _ in range(5):
-            try:
-                driver.verify_connectivity()
-                neo4j_driver = driver
-                print("Neo4j connected")
-                break
-            except Exception as e:
-                print(f"Neo4j init attempt failed: {e}")
-                time.sleep(2)
+    if os.environ.get("NEO4J_URL"):
+        neo4j_driver = connect_neo4j()
     fastapi_app.state.neo4j_driver = neo4j_driver
 
     try:
@@ -140,25 +141,25 @@ def set_user_reaction(event_id: str, user_id: str, like_value: int):
     key = f"user_reaction:{user_id}:{event_id}"
     redis_client.setex(key, 3600, like_value)
 
-
-
-
 def create_neo4j_user(user_id: str):
-    if not get_neo4j_driver():
+    driver = get_neo4j_driver()
+    if not driver:
         return
-    with get_neo4j_driver().session() as session:
+    with driver.session() as session:
         session.run("MERGE (:User {id: $id})", id=user_id)
 
 def create_neo4j_event(event_id: str, title: str):
-    if not get_neo4j_driver():
+    driver = get_neo4j_driver()
+    if not driver:
         return
-    with get_neo4j_driver().session() as session:
+    with driver.session() as session:
         session.run("MERGE (:Event {id: $id}) SET e.title = $title", id=event_id, title=title)
 
 def create_neo4j_like(user_id: str, event_id: str, title: str):
-    if not get_neo4j_driver():
+    driver = get_neo4j_driver()
+    if not driver:
         return
-    with get_neo4j_driver().session() as session:
+    with driver.session() as session:
         session.run(
             """
             MERGE (u:User {id: $user_id})
