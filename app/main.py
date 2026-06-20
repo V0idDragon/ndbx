@@ -22,61 +22,79 @@ from cassandra.query import SimpleStatement
 from cassandra import ConsistencyLevel
 from neo4j import GraphDatabase
 
+def connect_cassandra():
+    hosts = [h.strip() for h in os.environ["CASSANDRA_HOSTS"].split(",") if h.strip()]
+    if not hosts:
+        raise RuntimeError("CASSANDRA_HOSTS is empty")
+    username = (os.environ.get("CASSANDRA_USERNAME") or "").strip()
+    password = os.environ.get("CASSANDRA_PASSWORD") or ""
+    auth_provider = PlainTextAuthProvider(username=username, password=password) if username or password else None
+    port = int(os.environ.get("CASSANDRA_PORT", "9042"))
+    last_error = None
+    for _ in range(60):
+        cluster = Cluster(hosts, port=port, auth_provider=auth_provider)
+        try:
+            session = cluster.connect()
+            cl = getattr(ConsistencyLevel, os.environ.get("CASSANDRA_CONSISTENCY", "ONE").upper(), ConsistencyLevel.ONE)
+            session.default_consistency_level = cl
+            session.row_factory = dict_factory
+            return cluster, session
+        except Exception as exc:
+            last_error = exc
+            cluster.shutdown()
+            time.sleep(2)
+    if last_error:
+        raise last_error
+    raise RuntimeError("cannot connect to Cassandra")
+
 def connect_neo4j():
     auth = (os.environ.get("NEO4J_USERNAME") or "", os.environ.get("NEO4J_PASSWORD") or "")
     driver = GraphDatabase.driver(os.environ["NEO4J_URL"], auth=auth)
+    last_error = None
     for _ in range(60):
         try:
             driver.verify_connectivity()
             return driver
-        except Exception:
+        except Exception as exc:
+            last_error = exc
             time.sleep(2)
     driver.close()
-    return None
+    if last_error:
+        raise last_error
+    raise RuntimeError("cannot connect to Neo4j")
+
+def select_cassandra_keyspace(session):
+    keyspace = os.environ.get("CASSANDRA_KEYSPACE") or "testkeyspace"
+    session.set_keyspace(keyspace)
 
 @asynccontextmanager
 async def lifespan(fastapi_app: FastAPI):
-    cassandra_cluster_obj = None
-    cassandra_session_obj = None
-    hosts = [h.strip() for h in os.environ["CASSANDRA_HOSTS"].split(",") if h.strip()]
-    port = int(os.environ.get("CASSANDRA_PORT", "9042"))
-    keyspace = os.environ.get("CASSANDRA_KEYSPACE", "testkeyspace")
-    username = (os.environ.get("CASSANDRA_USERNAME") or "").strip()
-    password = os.environ.get("CASSANDRA_PASSWORD") or ""
-    auth_provider = PlainTextAuthProvider(username=username, password=password) if username or password else None
-
-    for _ in range(10):
-        cluster = Cluster(hosts, port=port, auth_provider=auth_provider)
-        try:
-            session = cluster.connect()
-            session.set_keyspace(keyspace)
-            cl = getattr(ConsistencyLevel, os.environ.get("CASSANDRA_CONSISTENCY", "ONE").upper(), ConsistencyLevel.ONE)
-            session.default_consistency_level = cl
-            session.row_factory = dict_factory
-            cassandra_cluster_obj = cluster
-            cassandra_session_obj = session
-            print("Cassandra connected")
-            break
-        except Exception as e:
-            print(f"Cassandra init attempt failed: {e}")
-            cluster.shutdown()
-            time.sleep(2)
-
-    fastapi_app.state.cassandra_cluster = cassandra_cluster_obj
-    fastapi_app.state.cassandra_session = cassandra_session_obj
-
-    neo4j_driver = None
-    if os.environ.get("NEO4J_URL"):
-        neo4j_driver = connect_neo4j()
+    user = (os.environ.get("MONGODB_USER") or "").strip()
+    pwd = (os.environ.get("MONGODB_PASSWORD") or "").strip()
+    host = os.environ["MONGODB_HOST"]
+    port = int(os.environ["MONGODB_PORT"])
+    name = os.environ.get("MONGODB_DATABASE") or os.environ.get("MONGODB_DATABSE") or "eventhub"
+    if not user and not pwd:
+        uri = f"mongodb://{host}:{port}/{name}"
+    else:
+        uri = f"mongodb://{user}:{pwd}@{host}:{port}/{name}"
+        auth_src = (os.environ.get("MONGODB_AUTH_SOURCE") or "").strip()
+        if auth_src:
+            uri += f"?authSource={auth_src}"
+    client = MongoClient(uri)
+    fastapi_app.state.mongo_db = client[name]
+    cassandra_cluster, cassandra_session = connect_cassandra()
+    select_cassandra_keyspace(cassandra_session)
+    fastapi_app.state.cassandra_cluster = cassandra_cluster
+    fastapi_app.state.cassandra_session = cassandra_session
+    neo4j_driver = connect_neo4j()
     fastapi_app.state.neo4j_driver = neo4j_driver
-
     try:
         yield
     finally:
-        if cassandra_cluster_obj:
-            cassandra_cluster_obj.shutdown()
-        if neo4j_driver:
-            neo4j_driver.close()
+        neo4j_driver.close()
+        cassandra_cluster.shutdown()
+        client.close()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -143,22 +161,16 @@ def set_user_reaction(event_id: str, user_id: str, like_value: int):
 
 def create_neo4j_user(user_id: str):
     driver = get_neo4j_driver()
-    if not driver:
-        return
     with driver.session() as session:
         session.run("MERGE (:User {id: $id})", id=user_id)
 
 def create_neo4j_event(event_id: str, title: str):
     driver = get_neo4j_driver()
-    if not driver:
-        return
     with driver.session() as session:
         session.run("MERGE (:Event {id: $id}) SET e.title = $title", id=event_id, title=title)
 
 def create_neo4j_like(user_id: str, event_id: str, title: str):
     driver = get_neo4j_driver()
-    if not driver:
-        return
     with driver.session() as session:
         session.run(
             """
