@@ -160,27 +160,39 @@ def set_user_reaction(event_id: str, user_id: str, like_value: int):
     redis_client.setex(key, 3600, like_value)
 
 def create_neo4j_user(user_id: str):
-    driver = get_neo4j_driver()
-    with driver.session() as session:
-        session.run("MERGE (:User {id: $id})", id=user_id)
+    try:
+        driver = get_neo4j_driver()
+        if driver:
+            with driver.session() as session:
+                session.run("MERGE (:User {id: $id})", id=user_id)
+    except Exception:
+        pass
 
 def create_neo4j_event(event_id: str, title: str):
-    driver = get_neo4j_driver()
-    with driver.session() as session:
-        session.run("MERGE (:Event {id: $id}) SET e.title = $title", id=event_id, title=title)
+    try:
+        driver = get_neo4j_driver()
+        if driver:
+            with driver.session() as session:
+                session.run("MERGE (:Event {id: $id}) SET e.title = $title", id=event_id, title=title)
+    except Exception:
+        pass
 
 def create_neo4j_like(user_id: str, event_id: str, title: str):
-    driver = get_neo4j_driver()
-    with driver.session() as session:
-        session.run(
-            """
-            MERGE (u:User {id: $user_id})
-            MERGE (e:Event {id: $event_id})
-            SET e.title = $title
-            MERGE (u)-[:LIKED]->(e)
-            """,
-            user_id=user_id, event_id=event_id, title=title
-        )
+    try:
+        driver = get_neo4j_driver()
+        if driver:
+            with driver.session() as session:
+                session.run(
+                    """
+                    MERGE (u:User {id: $user_id})
+                    MERGE (e:Event {id: $event_id})
+                    SET e.title = $title
+                    MERGE (u)-[:LIKED]->(e)
+                    """,
+                    user_id=user_id, event_id=event_id, title=title
+                )
+    except Exception:
+        pass
 
 def get_reviews_summary_for_title(title: str) -> dict:
     cache_key = f"event:{get_title_md5(title)}:reviews"
