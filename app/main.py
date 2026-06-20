@@ -135,6 +135,20 @@ def invalidate_reviews_cache(title: str):
     cache_key = f"event:{get_title_md5(title)}:reviews"
     redis_client.delete(cache_key)    
 
+def update_reviews_cache(title: str):
+    event_ids = [str(e["_id"]) for e in events_collection.find({"title": title}, {"_id": 1})]
+    total_rating = 0
+    count = 0
+    for eid in event_ids:
+        rows = cassandra_execute("SELECT rating FROM event_reviews WHERE event_id = %s", (eid,))
+        for row in rows:
+            total_rating += row["rating"]
+            count += 1
+    rating = round(total_rating / count, 1) if count > 0 else 0.0
+    cache_key = f"event:{get_title_md5(title)}:reviews"
+    redis_client.hset(cache_key, mapping={"count": count, "rating": str(rating)})
+    redis_client.expire(cache_key, int(os.getenv("APP_EVENT_REVIEWS_TTL", "120")))    
+
 def now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -913,7 +927,7 @@ async def create_review(event_id: str, request: Request, response: Response):
         (event_id, user_id, review_id, rating, comment, now, now)
     )
 
-    get_reviews_summary_for_title(event["title"])
+    update_reviews_cache(event["title"])
 
     redis_client.expire(redis_key(sid), get_ttl())
     res = JSONResponse(status_code=201, content={"id": str(review_id)})
@@ -996,7 +1010,7 @@ async def update_review(event_id: str, review_id: str, request: Request, respons
 
     event = events_collection.find_one({"_id": ObjectId(event_id)})
     if event:
-        get_reviews_summary_for_title(event["title"])
+        update_reviews_cache(event["title"])
 
     res = Response(status_code=204)
     res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
