@@ -262,39 +262,52 @@ def get_reactions_for_title(title: str) -> dict:
 
 
 def get_recommendations(user_id: str) -> list:
-    with get_neo4j_driver().session() as session:
-        result = session.run(
+    driver = get_neo4j_driver()
+    if not driver:
+        return []
+    with driver.session() as session:
+        rows = session.run(
             """
             MATCH (me:User {id: $user_id})-[:LIKED]->(:Event)<-[:LIKED]-(other:User)-[:LIKED]->(event:Event)
             WHERE NOT (me)-[:LIKED]->(event)
             RETURN event.id AS id, count(*) AS score
             ORDER BY score DESC
             """,
-            user_id=user_id
+            user_id=user_id,
         )
-        event_ids = [record["id"] for record in result]
+        event_ids = [row["id"] for row in rows if row["id"]]
 
     if not event_ids:
         return []
 
-    docs = []
+    selected = {}
     for eid in event_ids:
         try:
             doc = events_collection.find_one({"_id": ObjectId(eid)})
-            if doc:
-                docs.append(doc)
         except Exception:
-            pass
-
-    seen_titles = set()
-    unique_docs = []
-    for doc in docs:
+            continue
+        if not doc:
+            continue
         title = doc.get("title")
-        if title not in seen_titles:
-            seen_titles.add(title)
-            unique_docs.append(doc)
+        if not title:
+            continue
+        started = doc.get("started_at")
+        if started:
+            try:
+                started_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+            except Exception:
+                started_dt = datetime.max.replace(tzinfo=timezone.utc)
+        else:
+            started_dt = datetime.max.replace(tzinfo=timezone.utc)
 
-    return unique_docs
+        current = selected.get(title)
+        if current is None:
+            selected[title] = (doc, started_dt)
+        else:
+            if started_dt < current[1]:
+                selected[title] = (doc, started_dt)
+
+    return [doc for doc, _ in selected.values()]
 
 @app.get("/health")
 def health(request: Request, response: Response):
