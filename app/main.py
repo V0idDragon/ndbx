@@ -949,10 +949,10 @@ def get_reviews(event_id: str, request: Request, limit: int = 10, offset: int = 
             "id": str(row["id"]),
             "event_id": row["event_id"],
             "comment": row["comment"],
-            "created_at": row["created_at"].isoformat(),
+            "created_at": row["created_at"].strftime("%Y-%m-%dT%H:%M:%SZ"),
             "created_by": row["created_by"],
             "rating": row["rating"],
-            "updated_at": row["updated_at"].isoformat()
+            "updated_at": row["updated_at"].strftime("%Y-%m-%dT%H:%M:%SZ")
         })
 
     reviews_list.sort(key=lambda r: r["created_at"], reverse=True)
