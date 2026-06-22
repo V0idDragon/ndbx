@@ -54,6 +54,56 @@ flowchart LR
     Neo4j --> N1[Граф LIKED]
 ```
 
+### Основные сущности и связи
+
+```mermaid
+erDiagram
+    USER ||--o{ EVENT : creates
+    USER ||--o{ EVENT_REACTION : reacts
+    USER ||--o{ EVENT_REVIEW : writes
+    EVENT ||--o{ EVENT_REACTION : receives
+    EVENT ||--o{ EVENT_REVIEW : receives
+    USER ||--o{ LIKED_EDGE : has
+    EVENT ||--o{ LIKED_EDGE : target
+
+    USER {
+        string id
+        string full_name
+        string username
+        string password_hash
+    }
+
+    EVENT {
+        string id
+        string title
+        string description
+        object location
+        string created_by
+        datetime created_at
+        datetime started_at
+        datetime finished_at
+        string category
+        int price
+    }
+
+    EVENT_REACTION {
+        string event_id
+        string created_by
+        int like_value
+        datetime created_at
+    }
+
+    EVENT_REVIEW {
+        uuid id
+        string event_id
+        string created_by
+        int rating
+        string comment
+        datetime created_at
+        datetime updated_at
+    }
+```
+
 **Хранение данных:**
 - **MongoDB** – коллекции `users` и `events`. События шардированы по `created_by`.
 - **Redis** – сессии (`sid:<id>`), кэш реакций, отзывов и рекомендаций.
