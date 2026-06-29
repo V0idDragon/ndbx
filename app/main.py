@@ -115,11 +115,6 @@ db = mongo_client[os.getenv("MONGODB_DATABASE")]
 users_collection = db["users"]
 events_collection = db["events"]
 
-users_collection.create_index("username", unique=True)
-events_collection.create_index([("title", ASCENDING)])
-events_collection.create_index([("title", ASCENDING), ("created_by", ASCENDING)])
-events_collection.create_index([("created_by", ASCENDING)])
-
 SESSION_COOKIE_NAME = "X-Session-Id"
 
 def get_cassandra_session():
