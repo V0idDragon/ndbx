@@ -25,7 +25,6 @@ rs.initiate({
 "
 echo "Shard1 initialized."
 
-# Init shard2
 mongosh --host mongo-shard2-1 --port ${MONGODB_SHARD_PORT} --eval "
 rs.initiate({
   _id: 'shard2',
@@ -50,5 +49,14 @@ mongosh --host mongodb --port ${MONGODB_PORT} --eval '
 sh.enableSharding("eventhub");
 sh.shardCollection("eventhub.events", { "created_by": "hashed" });
 '
+
+mongosh --host mongodb --port ${MONGODB_PORT} --eval '
+db = db.getSiblingDB("eventhub");
+db.users.createIndex({username: 1}, {unique: true});
+db.events.createIndex({title: 1});
+db.events.createIndex({title: 1, created_by: 1});
+db.events.createIndex({created_by: 1});
+'
+
 echo "Sharding enabled for eventhub.events."
 echo "MongoDB cluster initialization complete."
