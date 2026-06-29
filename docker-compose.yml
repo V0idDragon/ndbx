@@ -6,17 +6,108 @@ services:
     ports:
       - "${APP_PORT}:${APP_PORT}"
     depends_on:
-      - redis
-      - mongodb
-    
+      redis:
+        condition: service_started
+      mongo-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     ports:
       - "${REDIS_PORT}:${REDIS_PORT}"
     restart: unless-stopped
 
+  mongo-config:
+    image: mongo:7
+    container_name: mongo-config
+    command: mongod --configsvr --replSet cfg --port ${MONGODB_CONFIG_PORT} --dbpath /data/db
+    volumes:
+      - mongo-config-data:/data/db
+    restart: unless-stopped
+
+  mongo-shard1-1:
+    image: mongo:7
+    container_name: mongo-shard1-1
+    command: mongod --shardsvr --replSet shard1 --port ${MONGODB_SHARD_PORT} --dbpath /data/db
+    volumes:
+      - mongo-shard1-1-data:/data/db
+    restart: unless-stopped
+
+  mongo-shard1-2:
+    image: mongo:7
+    container_name: mongo-shard1-2
+    command: mongod --shardsvr --replSet shard1 --port ${MONGODB_SHARD_PORT} --dbpath /data/db
+    volumes:
+      - mongo-shard1-2-data:/data/db
+    restart: unless-stopped
+
+  mongo-shard1-3:
+    image: mongo:7
+    container_name: mongo-shard1-3
+    command: mongod --shardsvr --replSet shard1 --port ${MONGODB_SHARD_PORT} --dbpath /data/db
+    volumes:
+      - mongo-shard1-3-data:/data/db
+    restart: unless-stopped
+
+  mongo-shard2-1:
+    image: mongo:7
+    container_name: mongo-shard2-1
+    command: mongod --shardsvr --replSet shard2 --port ${MONGODB_SHARD_PORT} --dbpath /data/db
+    volumes:
+      - mongo-shard2-1-data:/data/db
+    restart: unless-stopped
+
+  mongo-shard2-2:
+    image: mongo:7
+    container_name: mongo-shard2-2
+    command: mongod --shardsvr --replSet shard2 --port ${MONGODB_SHARD_PORT} --dbpath /data/db
+    volumes:
+      - mongo-shard2-2-data:/data/db
+    restart: unless-stopped
+
+  mongo-shard2-3:
+    image: mongo:7
+    container_name: mongo-shard2-3
+    command: mongod --shardsvr --replSet shard2 --port ${MONGODB_SHARD_PORT} --dbpath /data/db
+    volumes:
+      - mongo-shard2-3-data:/data/db
+    restart: unless-stopped
+
   mongodb:
     image: mongo:7
     container_name: mongodb
+    command: mongos --configdb cfg/mongo-config:${MONGODB_CONFIG_PORT} --port ${MONGODB_PORT} --bind_ip_all
     ports:
-    - "${MONGODB_PORT}:${MONGODB_PORT}"  
+      - "${MONGODB_PORT}:${MONGODB_PORT}"
+    depends_on:
+      - mongo-config
+      - mongo-shard1-1
+      - mongo-shard1-2
+      - mongo-shard1-3
+      - mongo-shard2-1
+      - mongo-shard2-2
+      - mongo-shard2-3
+    restart: unless-stopped
+
+  mongo-init:
+    image: mongo:7
+    depends_on:
+      - mongodb
+    environment:
+      - MONGODB_CONFIG_PORT=${MONGODB_CONFIG_PORT}
+      - MONGODB_SHARD_PORT=${MONGODB_SHARD_PORT}
+      - MONGODB_PORT=${MONGODB_PORT}
+    volumes:
+      - ./scripts:/scripts
+    entrypoint: ["sh", "/scripts/init-shard.sh"]
+    restart: "no"
+
+volumes:
+  mongo-config-data:
+  mongo-shard1-1-data:
+  mongo-shard1-2-data:
+  mongo-shard1-3-data:
+  mongo-shard2-1-data:
+  mongo-shard2-2-data:
+  mongo-shard2-3-data:

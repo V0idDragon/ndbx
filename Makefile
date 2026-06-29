@@ -23,4 +23,4 @@ stop:
 # Cleans up all resources including volumes.
 .PHONY: clean
 clean:
-	docker compose down -v
+	docker compose --env-file .env.local down -v 
