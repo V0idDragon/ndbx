@@ -4,3 +4,4 @@ redis
 pymongo
 bcrypt
 cassandra-driver
+neo4j

@@ -13,15 +13,90 @@ from bson import ObjectId
 from pymongo import MongoClient, ASCENDING
 from datetime import datetime, timezone
 from fastapi import FastAPI, Request, Response
+from contextlib import asynccontextmanager
 from fastapi.responses import JSONResponse
 from cassandra.cluster import Cluster
 from cassandra.auth import PlainTextAuthProvider
 from cassandra.query import dict_factory
 from cassandra.query import SimpleStatement
 from cassandra import ConsistencyLevel
+from neo4j import GraphDatabase
 
+def connect_cassandra():
+    hosts = [h.strip() for h in os.environ["CASSANDRA_HOSTS"].split(",") if h.strip()]
+    if not hosts:
+        raise RuntimeError("CASSANDRA_HOSTS is empty")
+    username = (os.environ.get("CASSANDRA_USERNAME") or "").strip()
+    password = os.environ.get("CASSANDRA_PASSWORD") or ""
+    auth_provider = PlainTextAuthProvider(username=username, password=password) if username or password else None
+    port = int(os.environ.get("CASSANDRA_PORT", "9042"))
+    last_error = None
+    for _ in range(60):
+        cluster = Cluster(hosts, port=port, auth_provider=auth_provider)
+        try:
+            session = cluster.connect()
+            cl = getattr(ConsistencyLevel, os.environ.get("CASSANDRA_CONSISTENCY", "ONE").upper(), ConsistencyLevel.ONE)
+            session.default_consistency_level = cl
+            session.row_factory = dict_factory
+            return cluster, session
+        except Exception as exc:
+            last_error = exc
+            cluster.shutdown()
+            time.sleep(2)
+    if last_error:
+        raise last_error
+    raise RuntimeError("cannot connect to Cassandra")
 
-app = FastAPI()
+def connect_neo4j():
+    auth = (os.environ.get("NEO4J_USERNAME") or "", os.environ.get("NEO4J_PASSWORD") or "")
+    driver = GraphDatabase.driver(os.environ["NEO4J_URL"], auth=auth)
+    last_error = None
+    for _ in range(60):
+        try:
+            driver.verify_connectivity()
+            return driver
+        except Exception as exc:
+            last_error = exc
+            time.sleep(2)
+    driver.close()
+    if last_error:
+        raise last_error
+    raise RuntimeError("cannot connect to Neo4j")
+
+def select_cassandra_keyspace(session):
+    keyspace = os.environ.get("CASSANDRA_KEYSPACE") or "testkeyspace"
+    session.set_keyspace(keyspace)
+
+@asynccontextmanager
+async def lifespan(fastapi_app: FastAPI):
+    user = (os.environ.get("MONGODB_USER") or "").strip()
+    pwd = (os.environ.get("MONGODB_PASSWORD") or "").strip()
+    host = os.environ["MONGODB_HOST"]
+    port = int(os.environ["MONGODB_PORT"])
+    name = os.environ.get("MONGODB_DATABASE") or os.environ.get("MONGODB_DATABSE") or "eventhub"
+    if not user and not pwd:
+        uri = f"mongodb://{host}:{port}/{name}"
+    else:
+        uri = f"mongodb://{user}:{pwd}@{host}:{port}/{name}"
+        auth_src = (os.environ.get("MONGODB_AUTH_SOURCE") or "").strip()
+        if auth_src:
+            uri += f"?authSource={auth_src}"
+    client = MongoClient(uri)
+    fastapi_app.state.mongo_db = client[name]
+    cassandra_cluster, cassandra_session = connect_cassandra()
+    select_cassandra_keyspace(cassandra_session)
+    fastapi_app.state.cassandra_cluster = cassandra_cluster
+    fastapi_app.state.cassandra_session = cassandra_session
+    neo4j_driver = connect_neo4j()
+    fastapi_app.state.neo4j_driver = neo4j_driver
+    try:
+        yield
+    finally:
+        neo4j_driver.close()
+        cassandra_cluster.shutdown()
+        client.close()
+
+app = FastAPI(lifespan=lifespan)
 
 redis_client = redis.Redis(
     host=os.getenv("REDIS_HOST"),
@@ -42,40 +117,15 @@ events_collection = db["events"]
 
 SESSION_COOKIE_NAME = "X-Session-Id"
 
-cassandra_session = None
+def get_cassandra_session():
+    return app.state.cassandra_session
 
-def init_cassandra():
-    global cassandra_session
-    hosts = [h.strip() for h in os.environ["CASSANDRA_HOSTS"].split(",") if h.strip()]
-    username = (os.environ.get("CASSANDRA_USERNAME") or "").strip()
-    password = os.environ.get("CASSANDRA_PASSWORD") or ""
-    auth_provider = PlainTextAuthProvider(username=username, password=password) if username or password else None
-    port = int(os.environ.get("CASSANDRA_PORT", "9042"))
-    for _ in range(60):
-        cluster = Cluster(hosts, port=port, auth_provider=auth_provider)
-        try:
-            session = cluster.connect()
-            session.set_keyspace(os.environ.get("CASSANDRA_KEYSPACE", "testkeyspace"))
-            cl = getattr(ConsistencyLevel, os.environ.get("CASSANDRA_CONSISTENCY", "ONE").upper(), ConsistencyLevel.ONE)
-            session.default_consistency_level = cl
-            session.row_factory = dict_factory
-            cassandra_session = session
-            print("Cassandra connected")
-            return
-        except Exception as e:
-            print(f"Cassandra init attempt failed: {e}")
-            cluster.shutdown()
-            import time
-            time.sleep(2)
-    raise RuntimeError("Cannot connect to Cassandra")
-
-def get_cassandra():
-    global cassandra_session
-    return cassandra_session
+def get_neo4j_driver():
+    return app.state.neo4j_driver
 
 
 def cassandra_execute(query, params=None):
-    s = get_cassandra()
+    s = get_cassandra_session()
     if not s:
         raise RuntimeError("Cassandra not available")
     statement = SimpleStatement(query, consistency_level=ConsistencyLevel.ONE)
@@ -103,6 +153,41 @@ def get_user_reaction(event_id: str, user_id: str):
 def set_user_reaction(event_id: str, user_id: str, like_value: int):
     key = f"user_reaction:{user_id}:{event_id}"
     redis_client.setex(key, 3600, like_value)
+
+def create_neo4j_user(user_id: str):
+    try:
+        driver = get_neo4j_driver()
+        if driver:
+            with driver.session() as session:
+                session.run("MERGE (:User {id: $id})", id=user_id)
+    except Exception:
+        pass
+
+def create_neo4j_event(event_id: str, title: str):
+    try:
+        driver = get_neo4j_driver()
+        if driver:
+            with driver.session() as session:
+                session.run("MERGE (:Event {id: $id}) SET e.title = $title", id=event_id, title=title)
+    except Exception:
+        pass
+
+def create_neo4j_like(user_id: str, event_id: str, title: str):
+    try:
+        driver = get_neo4j_driver()
+        if driver:
+            with driver.session() as session:
+                session.run(
+                    """
+                    MERGE (u:User {id: $user_id})
+                    MERGE (e:Event {id: $event_id})
+                    SET e.title = $title
+                    MERGE (u)-[:LIKED]->(e)
+                    """,
+                    user_id=user_id, event_id=event_id, title=title
+                )
+    except Exception:
+        pass
 
 def get_reviews_summary_for_title(title: str) -> dict:
     cache_key = f"event:{get_title_md5(title)}:reviews"
@@ -210,6 +295,55 @@ def get_reactions_for_title(title: str) -> dict:
             elif row.like_value == -1:
                 dislikes += 1
     return {"likes": likes, "dislikes": likes}
+
+
+def get_recommendations(user_id: str) -> list:
+    driver = get_neo4j_driver()
+    if not driver:
+        return []
+    with driver.session() as session:
+        rows = session.run(
+            """
+            MATCH (me:User {id: $user_id})-[:LIKED]->(:Event)<-[:LIKED]-(other:User)-[:LIKED]->(event:Event)
+            WHERE NOT (me)-[:LIKED]->(event)
+            RETURN event.id AS id, count(*) AS score
+            ORDER BY score DESC
+            """,
+            user_id=user_id,
+        )
+        event_ids = [row["id"] for row in rows if row["id"]]
+
+    if not event_ids:
+        return []
+
+    selected = {}
+    for eid in event_ids:
+        try:
+            doc = events_collection.find_one({"_id": ObjectId(eid)})
+        except Exception:
+            continue
+        if not doc:
+            continue
+        title = doc.get("title")
+        if not title:
+            continue
+        started = doc.get("started_at")
+        if started:
+            try:
+                started_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+            except Exception:
+                started_dt = datetime.max.replace(tzinfo=timezone.utc)
+        else:
+            started_dt = datetime.max.replace(tzinfo=timezone.utc)
+
+        current = selected.get(title)
+        if current is None:
+            selected[title] = (doc, started_dt)
+        else:
+            if started_dt < current[1]:
+                selected[title] = (doc, started_dt)
+
+    return [doc for doc, _ in selected.values()]
 
 @app.get("/health")
 def health(request: Request, response: Response):
@@ -321,6 +455,7 @@ async def create_user(request: Request, response: Response):
     }
 
     result = users_collection.insert_one(user)
+    create_neo4j_user(str(result.inserted_id))
 
     sid = generate_sid()
     key = redis_key(sid)
@@ -484,6 +619,7 @@ async def create_event(request: Request, response: Response):
     }
 
     result = events_collection.insert_one(event)
+    create_neo4j_event(str(result.inserted_id), title)
 
     ttl = get_ttl()
     redis_client.expire(redis_key(sid), ttl)
@@ -818,6 +954,7 @@ async def like_event(event_id: str, request: Request, response: Response):
     redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
 
     set_user_reaction(event_id, user_id, 1)
+    create_neo4j_like(user_id, event_id, event["title"])
 
     redis_client.expire(redis_key(sid), get_ttl())
     res = Response(status_code=204)
@@ -1012,8 +1149,36 @@ async def update_review(event_id: str, review_id: str, request: Request, respons
     return res
 
 
+@app.get("/recommendations")
+def recommendations(request: Request, response: Response):
+    sid, session_data = get_session_data(request)
+    if not session_data or "user_id" not in session_data:
+        return Response(status_code=401)
+
+    user_id = session_data["user_id"]
+
+    cache_key = f"user:{user_id}:recomms"
+    cached = redis_client.hget(cache_key, "events")
+    if cached:
+        events = json.loads(cached)
+        redis_client.expire(redis_key(sid), get_ttl())
+        res = JSONResponse(content={"events": events})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
+
+    docs = get_recommendations(user_id)
+    events = [event_to_response(doc) for doc in docs]
+
+    redis_client.hset(cache_key, "events", json.dumps(events))
+    redis_client.expire(cache_key, int(os.getenv("APP_RECOMMENDATIONS_TTL", "60")))
+
+    redis_client.expire(redis_key(sid), get_ttl())
+    res = JSONResponse(content={"events": events})
+    res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+    return res    
+
+
 if __name__ == "__main__":
-    init_cassandra()
 
     raw_host = os.getenv("APP_HOST", "0.0.0.0")
     host = raw_host.replace("http://", "").replace("https://", "").strip("/")
