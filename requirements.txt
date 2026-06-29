@@ -3,3 +3,4 @@ uvicorn
 redis
 pymongo
 bcrypt
+cassandra-driver

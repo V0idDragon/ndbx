@@ -3,12 +3,21 @@ import redis
 import uvicorn
 import secrets
 import bcrypt
+import hashlib
+import json
+import threading
+import time
 
 from bson import ObjectId
 from pymongo import MongoClient, ASCENDING
 from datetime import datetime, timezone
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
+from cassandra.cluster import Cluster
+from cassandra.auth import PlainTextAuthProvider
+from cassandra.query import dict_factory
+from cassandra.query import SimpleStatement
+from cassandra import ConsistencyLevel
 
 
 app = FastAPI()
@@ -32,6 +41,45 @@ events_collection = db["events"]
 
 SESSION_COOKIE_NAME = "X-Session-Id"
 
+cassandra_session = None
+
+def init_cassandra():
+    global cassandra_session
+    hosts = [h.strip() for h in os.environ["CASSANDRA_HOSTS"].split(",") if h.strip()]
+    username = (os.environ.get("CASSANDRA_USERNAME") or "").strip()
+    password = os.environ.get("CASSANDRA_PASSWORD") or ""
+    auth_provider = PlainTextAuthProvider(username=username, password=password) if username or password else None
+    port = int(os.environ.get("CASSANDRA_PORT", "9042"))
+    for _ in range(60):
+        cluster = Cluster(hosts, port=port, auth_provider=auth_provider)
+        try:
+            session = cluster.connect()
+            session.set_keyspace(os.environ.get("CASSANDRA_KEYSPACE", "testkeyspace"))
+            cl = getattr(ConsistencyLevel, os.environ.get("CASSANDRA_CONSISTENCY", "ONE").upper(), ConsistencyLevel.ONE)
+            session.default_consistency_level = cl
+            session.row_factory = dict_factory
+            cassandra_session = session
+            print("Cassandra connected")
+            return
+        except Exception as e:
+            print(f"Cassandra init attempt failed: {e}")
+            cluster.shutdown()
+            import time
+            time.sleep(2)
+    raise RuntimeError("Cannot connect to Cassandra")
+
+def get_cassandra():
+    global cassandra_session
+    return cassandra_session
+
+
+def cassandra_execute(query, params=None):
+    s = get_cassandra()
+    if not s:
+        raise RuntimeError("Cassandra not available")
+    statement = SimpleStatement(query, consistency_level=ConsistencyLevel.ONE)
+    return s.execute(statement, params or ())
+    
 
 def generate_sid():
     return secrets.token_hex(16)
@@ -43,6 +91,17 @@ def get_ttl():
 
 def redis_key(sid: str):
     return f"sid:{sid}"
+
+def get_user_reaction(event_id: str, user_id: str):
+    key = f"user_reaction:{user_id}:{event_id}"
+    val = redis_client.get(key)
+    if val is None:
+        return None
+    return int(val)
+
+def set_user_reaction(event_id: str, user_id: str, like_value: int):
+    key = f"user_reaction:{user_id}:{event_id}"
+    redis_client.setex(key, 3600, like_value)
 
 
 def now():
@@ -67,9 +126,9 @@ def get_session_data(request: Request):
     return sid, data
 
 
-def event_to_response(e):
+def event_to_response(e, reactions=None):
     location = e.get("location", {})
-    return {
+    result = {
         "id": str(e["_id"]),
         "title": e["title"],
         "category": e.get("category"),
@@ -84,7 +143,31 @@ def event_to_response(e):
         "started_at": e.get("started_at"),
         "finished_at": e.get("finished_at"),
     }
+    if reactions is not None:
+        result["reactions"] = reactions
+    return result
 
+def get_title_md5(title: str) -> str:
+    return hashlib.md5(title.encode('utf-8')).hexdigest()
+
+def get_reactions_for_title(title: str) -> dict:
+    cache_key = f"event:{get_title_md5(title)}:reactions"
+    cached = redis_client.hgetall(cache_key)
+    if cached:
+        redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
+        return {"likes": int(cached.get("likes", 0)), "dislikes": int(cached.get("dislikes", 0))}
+    
+    event_ids = [str(e["_id"]) for e in events_collection.find({"title": title}, {"_id": 1})]
+    likes = 0
+    dislikes = 0
+    for eid in event_ids:
+        rows = cassandra_execute("SELECT like_value FROM event_reactions WHERE event_id = %s", (eid,))
+        for row in rows:
+            if row.like_value == 1:
+                likes += 1
+            elif row.like_value == -1:
+                dislikes += 1
+    return {"likes": likes, "dislikes": likes}
 
 @app.get("/health")
 def health(request: Request, response: Response):
@@ -460,7 +543,11 @@ def get_events(request: Request):
         return error_response
 
     cursor = events_collection.find(query_or_error).skip(offset).limit(limit)
-    events = [event_to_response(e) for e in cursor]
+    include_reactions = request.query_params.get("include") == "reactions"
+    events = []
+    for e in cursor:
+        reactions = get_reactions_for_title(e["title"]) if include_reactions else None
+        events.append(event_to_response(e, reactions))
 
     return {
         "events": events,
@@ -478,7 +565,9 @@ def get_event(event_id: str, request: Request):
     if e is None:
         return JSONResponse(status_code=404, content={"message": "Not found"})
 
-    return event_to_response(e)
+    include_reactions = request.query_params.get("include") == "reactions"
+    reactions = get_reactions_for_title(e["title"]) if include_reactions else None
+    return event_to_response(e, reactions)
 
 
 @app.patch("/events/{event_id}")
@@ -627,17 +716,120 @@ def get_user_events(user_id: str, request: Request):
     query_or_error["created_by"] = user_id
 
     events_cursor = events_collection.find(query_or_error)
-    events = [event_to_response(e) for e in events_cursor]
+    include_reactions = request.query_params.get("include") == "reactions"
+    events = []
+    for e in events_cursor:
+        reactions = get_reactions_for_title(e["title"]) if include_reactions else None
+        events.append(event_to_response(e, reactions))
 
     return {
         "events": events,
         "count": len(events)
     }
 
+@app.post("/events/{event_id}/like")
+async def like_event(event_id: str, request: Request, response: Response):
+    sid, session_data = get_session_data(request)
+    if not session_data or "user_id" not in session_data:
+        res = Response(status_code=401)
+        res.delete_cookie(SESSION_COOKIE_NAME, path="/")
+        return res
+
+    try:
+        oid = ObjectId(event_id)
+    except Exception:
+        res = JSONResponse(status_code=404, content={"message": "Event not found"})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
+
+    event = events_collection.find_one({"_id": oid})
+    if not event:
+        res = JSONResponse(status_code=404, content={"message": "Event not found"})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
+
+    user_id = session_data["user_id"]
+
+    old_value = get_user_reaction(event_id, user_id)
+
+    cassandra_execute(
+        "INSERT INTO event_reactions (event_id, like_value, created_by, created_at) VALUES (%s, %s, %s, %s)",
+        (event_id, 1, user_id, datetime.now(timezone.utc))
+    )
+
+    cache_key = f"event:{get_title_md5(event['title'])}:reactions"
+    if not redis_client.exists(cache_key):
+        redis_client.hset(cache_key, mapping={"likes": 0, "dislikes": 0})
+    if old_value is None:
+        redis_client.hincrby(cache_key, "likes", 1)
+    elif old_value == -1:
+        redis_client.hincrby(cache_key, "dislikes", -1)
+        redis_client.hincrby(cache_key, "likes", 1)
+    redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
+
+    set_user_reaction(event_id, user_id, 1)
+
+    redis_client.expire(redis_key(sid), get_ttl())
+    res = Response(status_code=204)
+    res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+    return res
+
+
+@app.post("/events/{event_id}/dislike")
+async def dislike_event(event_id: str, request: Request, response: Response):
+    sid, session_data = get_session_data(request)
+    if not session_data or "user_id" not in session_data:
+        res = Response(status_code=401)
+        res.delete_cookie(SESSION_COOKIE_NAME, path="/")
+        return res
+
+    try:
+        oid = ObjectId(event_id)
+    except Exception:
+        res = JSONResponse(status_code=404, content={"message": "Event not found"})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
+
+    event = events_collection.find_one({"_id": oid})
+    if not event:
+        res = JSONResponse(status_code=404, content={"message": "Event not found"})
+        res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+        return res
+
+    user_id = session_data["user_id"]
+
+    old_value = get_user_reaction(event_id, user_id)
+
+    cassandra_execute(
+        "INSERT INTO event_reactions (event_id, like_value, created_by, created_at) VALUES (%s, %s, %s, %s)",
+        (event_id, -1, user_id, datetime.now(timezone.utc))
+    )
+
+    cache_key = f"event:{get_title_md5(event['title'])}:reactions"
+    if not redis_client.exists(cache_key):
+        redis_client.hset(cache_key, mapping={"likes": 0, "dislikes": 0})
+    if old_value is None:
+        redis_client.hincrby(cache_key, "dislikes", 1)
+    elif old_value == 1:
+        redis_client.hincrby(cache_key, "likes", -1)
+        redis_client.hincrby(cache_key, "dislikes", 1)
+    redis_client.expire(cache_key, int(os.getenv("APP_LIKE_TTL", "60")))
+
+    set_user_reaction(event_id, user_id, -1)
+
+    redis_client.expire(redis_key(sid), get_ttl())
+    res = Response(status_code=204)
+    res.set_cookie(key=SESSION_COOKIE_NAME, value=sid, httponly=True, max_age=get_ttl(), path="/")
+    return res
+
+
 if __name__ == "__main__":
+    init_cassandra()
+
     raw_host = os.getenv("APP_HOST", "0.0.0.0")
     host = raw_host.replace("http://", "").replace("https://", "").strip("/")
     port = int(os.getenv("APP_PORT", "8080"))
+
 
     uvicorn.run(
         app,

@@ -10,6 +10,8 @@ services:
         condition: service_started
       mongo-init:
         condition: service_completed_successfully
+      cassandra-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   redis:
@@ -103,6 +105,31 @@ services:
     entrypoint: ["sh", "/scripts/init-shard.sh"]
     restart: "no"
 
+  cassandra-test:
+    image: cassandra:4.1
+    container_name: cassandra-test
+    ports:
+      - "${CASSANDRA_PORT}:${CASSANDRA_PORT}"
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'SELECT now() FROM system.local'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  cassandra-init:
+    image: cassandra:4.1
+    depends_on:
+      cassandra-test:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/scripts
+    entrypoint: ["cqlsh", "cassandra-test", "-f", "/scripts/init-cassandra.cql"]
+    restart: "no"    
+
 volumes:
   mongo-config-data:
   mongo-shard1-1-data:
@@ -111,3 +138,4 @@ volumes:
   mongo-shard2-1-data:
   mongo-shard2-2-data:
   mongo-shard2-3-data:
+  cassandra-data:
